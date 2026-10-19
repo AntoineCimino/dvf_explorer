@@ -5,6 +5,7 @@ import duckdb
 
 from src.main import main
 from src.exports import generate_year_exports
+from src.keys import mutation_key
 from src.parse import create_view
 
 
@@ -85,5 +86,10 @@ def test_year_export_contract_contains_source_attribution_and_department_details
         "SELECT mutation_key, latitude, status FROM read_parquet(?)", [str(detail_path)],
     ).fetchone()
     assert result_row[0]
+    assert result_row[0] == mutation_key({
+        "date_mutation": "2024-03-12", "insee_code": "75056", "no_disposition": "1",
+        "code_departement": "75", "prefixe_section": "000", "section": "AB",
+        "no_plan": "0123",
+    })
     assert result_row[1:] == (None, None)
     assert result["files"][-1] == "manifest.json"

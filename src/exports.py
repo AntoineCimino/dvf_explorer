@@ -15,7 +15,6 @@ from typing import Any
 
 import duckdb
 
-from src.keys import mutation_key
 from src.parse import CANONICAL_COLUMNS
 
 
@@ -142,17 +141,33 @@ def generate_year_exports(
          AND CAST(rows.version AS INTEGER)=latest.version
     """)
 
-    def make_mutation_key(values):
-        return mutation_key(dict(zip(CANONICAL_COLUMNS, values)))
+    missing_keys = connection.execute(
+        "SELECT count(*) FROM dvf_snapshots WHERE CAST(millesime AS INTEGER)=? "
+        "AND (date_mutation IS NULL OR insee_code IS NULL OR no_disposition IS NULL)",
+        [year],
+    ).fetchone()[0]
+    if missing_keys:
+        connection.close()
+        shutil.rmtree(temporary_name, ignore_errors=True)
+        raise ValueError(f"Cannot build mutation keys: {missing_keys} rows lack required fields")
 
-    connection.create_function(
-        "dvf_mutation_key", make_mutation_key,
-        [duckdb.list_type(duckdb.sqltypes.VARCHAR)], duckdb.sqltypes.VARCHAR,
-        null_handling="special",
-    )
-    cast_projection = "[" + ", ".join(
-        f'CAST("{column}" AS VARCHAR)' for column in CANONICAL_COLUMNS
-    ) + "]"
+    def normalized_text(column: str) -> str:
+        value = (
+            f"lower(regexp_replace(nfc_normalize(trim(coalesce(CAST({column} AS VARCHAR), ''))), "
+            "'\\s+', ' ', 'g'))"
+        )
+        decimal = f"try_cast(replace({value}, ',', '.') AS DECIMAL(38,10))"
+        decimal_text = f"regexp_replace(regexp_replace(CAST({decimal} AS VARCHAR), '0+$', ''), '\\.$', '')"
+        return (
+            f"CASE WHEN regexp_full_match({value}, '-?[0-9]+([,.][0-9]+)?') "
+            f"THEN {decimal_text} ELSE {value} END"
+        )
+
+    key_columns = ("date_mutation", "insee_code", "no_disposition", "code_departement",
+                   "prefixe_section", "section", "no_plan")
+    key_payload = "to_json([" + ", ".join(
+        normalized_text(f'"{column}"') for column in key_columns
+    ) + "])"
     projection = ", ".join(f'"{column}"' for column in CANONICAL_COLUMNS)
     base_filter = "CAST(millesime AS INTEGER) = ? AND code_departement IS NOT NULL"
     result: dict[str, Any] = {"year": str(year), "details": {}, "files": []}
@@ -166,7 +181,7 @@ def generate_year_exports(
             relative = f"details/{year}/version={version}/{safe_dept}.parquet"
             target = exports_root / relative
             query = (
-                f"SELECT {projection}, dvf_mutation_key({cast_projection}) AS mutation_key, "
+                f"SELECT {projection}, sha256({key_payload}) AS mutation_key, "
                 "CAST(NULL AS VARCHAR) AS status, CAST(NULL AS VARCHAR) AS flag, "
                 "CAST(NULL AS DOUBLE) AS latitude, CAST(NULL AS DOUBLE) AS longitude "
                 f"FROM dvf_snapshots WHERE {base_filter} AND code_departement=?"

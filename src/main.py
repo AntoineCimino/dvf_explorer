@@ -158,15 +158,38 @@ def _command_sync(args) -> int:
         checksum, _ = fingerprint(source)
         registry = read_registry(args.registry)
         known = next((row for row in registry if row["sha256"] == checksum), None)
-        if known:
-            print(f"Unchanged: {publication.name}")
-            if os.environ.get("DVF_EPHEMERAL_RAW") == "1":
-                source.unlink(missing_ok=True)
-            continue
         year = publication.millesime
-        version = int(known["version"]) if known else max(
+        local_manifest_path = args.exports / "manifest.json"
+        local_manifest = (
+            json.loads(local_manifest_path.read_text(encoding="utf-8"))
+            if local_manifest_path.exists() else {}
+        )
+        local_snapshot = local_manifest.get("snapshots", {}).get(str(year), {})
+        remote_snapshot = (remote_manifest or {}).get("snapshots", {}).get(str(year), {})
+        if known:
+            version = int(known["version"])
+            local_is_complete = (
+                int(local_snapshot.get("version", -1)) == version
+                and local_snapshot.get("source_sha256") == checksum
+            )
+            remote_is_current = (
+                int(remote_snapshot.get("version", -1)) == version
+                and remote_snapshot.get("source_sha256") == checksum
+            )
+            if local_is_complete:
+                if remote_is_current:
+                    print(f"Unchanged: {publication.name}")
+                else:
+                    print(f"Resuming publication: {publication.name} version {version} is ready locally.")
+                    changed_years[year] = (version, checksum, known["name"])
+                if os.environ.get("DVF_EPHEMERAL_RAW") == "1":
+                    source.unlink(missing_ok=True)
+                continue
+            print(f"Resuming incomplete export: {publication.name} version {version}.")
+        else:
+            version = max(
             (int(row["version"]) for row in registry if int(row["millesime"]) == year), default=0
-        ) + 1
+            ) + 1
         if version > 1:
             previous_dir = args.parquet / f"millesime={year}" / f"version={version - 1}"
             if not previous_dir.exists():
@@ -182,8 +205,7 @@ def _command_sync(args) -> int:
             url=publication.registry_url, last_modified=publication.last_modified,
         )
         if not changed:
-            print(f"Already processed: {publication.name}")
-            continue
+            print(f"Rebuilding incomplete public bundle: {publication.name} version {version}.")
         registry = read_registry(args.registry)
         metadata = next(row for row in registry if row["sha256"] == checksum)
         result = generate_year_exports(
