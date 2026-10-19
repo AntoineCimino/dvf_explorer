@@ -191,23 +191,81 @@ def parse_file(
         con.execute(f"SET memory_limit = '{memory_limit}'")
     escaped_spill = spill_dir.as_posix().replace("'", "''")
     con.execute(f"SET temp_directory = '{escaped_spill}'")
-    con.execute("CREATE TABLE dvf (" + ", ".join(
-        f'"{column}" VARCHAR' for column in CANONICAL_COLUMNS
-    ) + ")")
-    placeholders = ",".join("?" for _ in CANONICAL_COLUMNS)
-    batch = []
-    con.execute("BEGIN TRANSACTION")
     try:
-        for row in _read_rows(source):
-            batch.append([row[column] for column in CANONICAL_COLUMNS])
-            if len(batch) == 5_000:
-                con.executemany(f"INSERT INTO dvf VALUES ({placeholders})", batch)
-                batch.clear()
-        if batch:
-            con.executemany(f"INSERT INTO dvf VALUES ({placeholders})", batch)
-        con.execute("COMMIT")
+        with source.open("r", encoding="utf-8-sig", newline="") as stream:
+            headers = next(csv.reader(stream, delimiter="|"), None)
+        if not headers:
+            raise ValueError(f"DVF file has no header: {source}")
+        source_columns: dict[str, str] = {}
+        seen: set[str] = set()
+        for header in headers:
+            key = _key(header)
+            if key in _IGNORED_HEADERS:
+                continue
+            canonical = _ALIASES.get(key)
+            if canonical is None:
+                raise ValueError(f"Unknown DVF header: {header!r}")
+            if canonical in seen:
+                raise ValueError(f"Duplicate DVF field {canonical!r}")
+            seen.add(canonical)
+            source_columns[canonical] = header
+
+        projection = []
+        for column in CANONICAL_COLUMNS:
+            header = source_columns.get(column)
+            if header is None:
+                projection.append(f'NULL::VARCHAR AS "{column}"')
+                continue
+            escaped_header = header.replace('"', '""')
+            value = f'trim(CAST("{escaped_header}" AS VARCHAR))'
+            projection.append(
+                f"CASE WHEN lower({value}) IN ('', 'nan', 'null', 'none') "
+                f"THEN NULL ELSE {value} END AS \"{column}\""
+            )
+        con.execute(
+            "CREATE TABLE dvf AS SELECT " + ", ".join(projection)
+            + " FROM read_csv(?, delim='|', header=true, all_varchar=true, "
+              "encoding='utf-8', strict_mode=true)",
+            [source.as_posix()],
+        )
+
+        invalid_counts = con.execute("""
+            SELECT
+              countif(date_mutation IS NOT NULL AND coalesce(
+                try_strptime(date_mutation, '%d/%m/%Y'),
+                try_strptime(date_mutation, '%Y-%m-%d'),
+                try_strptime(date_mutation, '%Y/%m/%d')) IS NULL),
+              countif(valeur_fonciere IS NOT NULL AND try_cast(
+                replace(replace(replace(valeur_fonciere, ' ', ''), chr(160), ''), ',', '.')
+                AS DECIMAL(18,2)) IS NULL),
+              countif(surface_reelle_bati IS NOT NULL AND try_cast(
+                replace(replace(replace(surface_reelle_bati, ' ', ''), chr(160), ''), ',', '.')
+                AS DECIMAL(12,2)) IS NULL),
+              countif(surface_terrain IS NOT NULL AND try_cast(
+                replace(replace(replace(surface_terrain, ' ', ''), chr(160), ''), ',', '.')
+                AS DECIMAL(14,2)) IS NULL),
+              countif(nombre_lots IS NOT NULL AND try_cast(nombre_lots AS INTEGER) IS NULL),
+              countif(nombre_pieces_principales IS NOT NULL AND try_cast(
+                nombre_pieces_principales AS INTEGER) IS NULL)
+            FROM dvf
+        """).fetchone()
+        if any(invalid_counts):
+            labels = ("date", "valeur_fonciere", "surface_reelle_bati", "surface_terrain",
+                      "nombre_lots", "nombre_pieces_principales")
+            invalid = ", ".join(f"{name}={count}" for name, count in zip(labels, invalid_counts) if count)
+            raise ValueError(f"Invalid DVF values: {invalid}")
+
+        con.execute("""
+            UPDATE dvf SET insee_code = CASE
+              WHEN code_departement IS NULL OR code_commune IS NULL THEN NULL
+              WHEN upper(trim(code_departement)) IN ('2A', '2B')
+                THEN upper(trim(code_departement)) || lpad(trim(code_commune), 3, '0')
+              WHEN starts_with(trim(code_departement), '97') AND length(trim(code_departement)) = 3
+                THEN trim(code_departement) || right(lpad(trim(code_commune), 3, '0'), 2)
+              ELSE lpad(trim(code_departement), 2, '0') || lpad(trim(code_commune), 3, '0')
+            END
+        """)
     except Exception:
-        con.execute("ROLLBACK")
         con.close()
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -220,8 +278,18 @@ def parse_file(
         "surface_reelle_bati": "DECIMAL(12,2)", "surface_terrain": "DECIMAL(14,2)",
         "nombre_lots": "INTEGER", "nombre_pieces_principales": "INTEGER",
     }
+    conversions = {
+        "date_mutation": "CAST(coalesce(try_strptime(date_mutation, '%d/%m/%Y'), "
+                         "try_strptime(date_mutation, '%Y-%m-%d'), "
+                         "try_strptime(date_mutation, '%Y/%m/%d')) AS DATE)",
+        "valeur_fonciere": "CAST(replace(replace(replace(valeur_fonciere, ' ', ''), chr(160), ''), ',', '.') AS DECIMAL(18,2))",
+        "surface_reelle_bati": "CAST(replace(replace(replace(surface_reelle_bati, ' ', ''), chr(160), ''), ',', '.') AS DECIMAL(12,2))",
+        "surface_terrain": "CAST(replace(replace(replace(surface_terrain, ' ', ''), chr(160), ''), ',', '.') AS DECIMAL(14,2))",
+        "nombre_lots": "CAST(nombre_lots AS INTEGER)",
+        "nombre_pieces_principales": "CAST(nombre_pieces_principales AS INTEGER)",
+    }
     projection = ", ".join(
-        f'CAST("{c}" AS {types[c]}) AS "{c}"' if c in types else f'"{c}"'
+        f'{conversions[c]} AS "{c}"' if c in conversions else f'"{c}"'
         for c in CANONICAL_COLUMNS
     )
     for department in departments:
