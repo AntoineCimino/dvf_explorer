@@ -41,7 +41,7 @@ never points to files that are still being transferred. It contains:
   values; unchanged rows are represented by the retained source snapshots and
   an unchanged count in the refresh summary.
 - `kpis/<year>.json.gz` and `search/<year>.json.gz`: year-level indicators and
-  place search indexes. The browser transparently decompresses these responses.
+  place search indexes. The browser fetch layer decompresses these gzip bundles.
 
 ## Hosting protocol
 

@@ -190,6 +190,12 @@ async function fetchJson<T>(path: string): Promise<T> {
   if (!response.ok) throw new Error(response.status === 404 || response.status === 503
     ? "Les données ne sont pas encore publiées."
     : `Erreur lors du chargement (${response.status}).`);
+  if (path.endsWith(".json.gz")) {
+    if (typeof DecompressionStream === "undefined") throw new Error("La décompression gzip n’est pas disponible dans ce navigateur.");
+    const body = response.body?.pipeThrough(new DecompressionStream("gzip"));
+    if (!body) throw new Error("Le bundle de données compressé est vide.");
+    return JSON.parse(await new Response(body).text()) as T;
+  }
   return response.json() as Promise<T>;
 }
 
