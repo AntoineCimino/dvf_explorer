@@ -18,7 +18,7 @@ export async function PUT(request: Request, context: { params: Promise<{ path: s
     return json({ error: "Unauthorized." }, 401);
   }
   const { path } = await context.params;
-  if (!path.length || path.some((part) => !/^[a-zA-Z0-9._-]+$/.test(part) || part === "..")) {
+  if (!path.length || path.some((part) => !/^[a-zA-Z0-9._=-]+$/.test(part) || part === "..")) {
     return json({ error: "Invalid export path." }, 400);
   }
   if (!request.body) return json({ error: "Request body is required." }, 400);
