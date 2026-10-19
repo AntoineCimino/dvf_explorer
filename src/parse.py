@@ -196,13 +196,21 @@ def parse_file(
     ) + ")")
     placeholders = ",".join("?" for _ in CANONICAL_COLUMNS)
     batch = []
-    for row in _read_rows(source):
-        batch.append([row[column] for column in CANONICAL_COLUMNS])
-        if len(batch) == 5_000:
+    con.execute("BEGIN TRANSACTION")
+    try:
+        for row in _read_rows(source):
+            batch.append([row[column] for column in CANONICAL_COLUMNS])
+            if len(batch) == 5_000:
+                con.executemany(f"INSERT INTO dvf VALUES ({placeholders})", batch)
+                batch.clear()
+        if batch:
             con.executemany(f"INSERT INTO dvf VALUES ({placeholders})", batch)
-            batch.clear()
-    if batch:
-        con.executemany(f"INSERT INTO dvf VALUES ({placeholders})", batch)
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        con.close()
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     outputs = []
     departments = [r[0] for r in con.execute(
         "SELECT DISTINCT code_departement FROM dvf WHERE code_departement IS NOT NULL ORDER BY 1"
