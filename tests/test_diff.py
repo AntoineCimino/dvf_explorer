@@ -1,4 +1,6 @@
-from src.diff import compare_versions
+import duckdb
+
+from src.diff import compare_versions, write_history_events
 
 
 def row(price, plan, city="75056"):
@@ -26,3 +28,19 @@ def test_window_expiration_is_not_a_retirement():
     )
     assert counts["removed"] == 1
     assert events[0]["flag"] == "hors_fenetre"
+
+
+def test_history_is_persisted_as_versioned_parquet(tmp_path):
+    events, _ = compare_versions(
+        [row(100, 1)], [row(125, 1)], previous_version=1, current_version=2,
+    )
+    target = write_history_events(
+        events, tmp_path, millesime=2024, previous_version=1, current_version=2,
+    )
+    assert target.exists()
+    record = duckdb.connect().execute(
+        "SELECT status, first_seen_version, last_seen_version, changes "
+        "FROM read_parquet(?)", [str(target)],
+    ).fetchone()
+    assert record[:3] == ("modified", 1, 2)
+    assert '"valeur_fonciere"' in str(record[3])

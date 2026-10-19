@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import json
+import os
+from pathlib import Path
+import tempfile
 from typing import Any, Iterable, Mapping
+
+import duckdb
 
 from src.keys import mutation_key, row_hash
 
@@ -125,3 +131,73 @@ def compare_versions(
 
     events.sort(key=lambda event: (event["mutation_key"], event["status"], event["row_hash"]))
     return events, dict(counts)
+
+
+def write_history_events(
+    events: Iterable[Mapping[str, Any]],
+    output_root: Path,
+    *,
+    millesime: int,
+    previous_version: int,
+    current_version: int,
+) -> Path:
+    """Write one immutable, queryable Parquet comparison partition."""
+    target = (Path(output_root) / f"millesime={millesime}"
+              / f"versions={previous_version}-{current_version}" / "row_history.parquet")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rows = sorted(events, key=lambda event: (
+        str(event["mutation_key"]), str(event["status"]), str(event["row_hash"]),
+    ))
+    connection = duckdb.connect()
+    connection.execute("SET threads=1")
+    connection.execute("""
+        CREATE TABLE row_history (
+            row_hash VARCHAR,
+            mutation_key VARCHAR,
+            first_seen_version INTEGER,
+            last_seen_version INTEGER,
+            status VARCHAR,
+            flag VARCHAR,
+            row_count INTEGER,
+            old_row JSON,
+            new_row JSON,
+            changes JSON
+        )
+    """)
+    connection.executemany(
+        "INSERT INTO row_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(
+            event["row_hash"], event["mutation_key"], event["first_seen_version"],
+            event["last_seen_version"], event["status"], event["flag"], event["count"],
+            json.dumps(event["old_row"], ensure_ascii=False, sort_keys=True),
+            json.dumps(event["new_row"], ensure_ascii=False, sort_keys=True),
+            json.dumps(event["changes"], ensure_ascii=False, sort_keys=True),
+        ) for event in rows],
+    )
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".parquet", delete=False) as stream:
+            temporary = Path(stream.name)
+        temporary.unlink()
+        output = temporary.resolve().as_posix().replace("'", "''")
+        connection.execute(
+            f"COPY (SELECT * FROM row_history ORDER BY mutation_key, status, row_hash) "
+            f"TO '{output}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)"
+        )
+        os.replace(temporary, target)
+    finally:
+        connection.close()
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return target
+
+
+def create_history_view(history_root: Path, database: Path = Path(":memory:")) -> duckdb.DuckDBPyConnection:
+    """Create a view over all retained comparison history partitions."""
+    root = Path(history_root).resolve().as_posix().replace("'", "''")
+    connection = duckdb.connect(str(database))
+    connection.execute(
+        f"CREATE OR REPLACE VIEW row_history AS "
+        f"SELECT * FROM read_parquet('{root}/**/row_history.parquet', hive_partitioning=true)"
+    )
+    return connection
