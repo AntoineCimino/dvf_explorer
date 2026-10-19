@@ -184,9 +184,9 @@ def generate_year_exports(
                 f"SELECT {projection}, sha256({key_payload}) AS mutation_key, "
                 "CAST(NULL AS VARCHAR) AS status, CAST(NULL AS VARCHAR) AS flag, "
                 "CAST(NULL AS DOUBLE) AS latitude, CAST(NULL AS DOUBLE) AS longitude "
-                f"FROM dvf_snapshots WHERE {base_filter} AND code_departement=?"
+                f"FROM dvf_snapshots WHERE {base_filter} AND dept=? AND code_departement=?"
             )
-            _copy_parquet(connection, query, target, [year, department])
+            _copy_parquet(connection, query, target, [year, department, department])
             result["details"][str(department)] = relative
             result["files"].append(relative)
 
