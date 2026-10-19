@@ -11,3 +11,4 @@ raw/
 *.duckdb.wal
 parquet/
 exports/
+fronts/.chatgpt_site_work/
