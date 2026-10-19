@@ -129,16 +129,10 @@ def generate_year_exports(
     connection.execute(f"SET temp_directory = '{escaped_spill}'")
     connection.execute(f"""
         CREATE TEMP VIEW dvf_snapshots AS
-        WITH all_rows AS (
-            SELECT * FROM read_parquet('{root}/millesime=*/version=*/*/*.parquet',
-                                       hive_partitioning=true, union_by_name=true)
-        ), latest AS (
-            SELECT millesime, max(CAST(version AS INTEGER)) AS version
-            FROM all_rows GROUP BY millesime
+        SELECT * FROM read_parquet(
+          '{root}/millesime={year}/version={version}/dept=*/part-00000.parquet',
+          hive_partitioning=true, union_by_name=true
         )
-        SELECT rows.* FROM all_rows rows JOIN latest
-          ON rows.millesime=latest.millesime
-         AND CAST(rows.version AS INTEGER)=latest.version
     """)
 
     missing_keys = connection.execute(
