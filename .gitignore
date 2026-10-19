@@ -1,0 +1,12 @@
+.env
+.pytest_cache/
+.hypothesis/
+__pycache__/
+*.py[cod]
+graphify-out/
+data/raw_txt/
+raw/
+*.duckdb
+*.duckdb.wal
+parquet/
+exports/

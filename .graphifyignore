@@ -1,0 +1,17 @@
+# Vendor / bundled assets (Streamlit, FastAPI, dashboard components)
+**/*.min.js
+**/*.umd.js
+**/static/
+**/node_modules/
+
+# Raw input data — not architecture
+data/raw/
+data/cache/
+outputs/
+*.csv
+*.parquet
+*.db
+
+# Infra / config noise
+.claude/
+tasks/
