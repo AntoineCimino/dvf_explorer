@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 import duckdb
 
 from src.keys import mutation_key, row_hash
+from src.parse import CANONICAL_COLUMNS
 
 
 def compare_versions(
@@ -169,9 +170,9 @@ def write_history_events(
         [(
             event["row_hash"], event["mutation_key"], event["first_seen_version"],
             event["last_seen_version"], event["status"], event["flag"], event["count"],
-            json.dumps(event["old_row"], ensure_ascii=False, sort_keys=True),
-            json.dumps(event["new_row"], ensure_ascii=False, sort_keys=True),
-            json.dumps(event["changes"], ensure_ascii=False, sort_keys=True),
+            json.dumps(event["old_row"], ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(event["new_row"], ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(event["changes"], ensure_ascii=False, sort_keys=True, default=str),
         ) for event in rows],
     )
     temporary = None
@@ -201,3 +202,23 @@ def create_history_view(history_root: Path, database: Path = Path(":memory:")) -
         f"SELECT * FROM read_parquet('{root}/**/row_history.parquet', hive_partitioning=true)"
     )
     return connection
+
+
+def read_snapshot_rows(parquet_root: Path, *, millesime: int, version: int) -> list[dict[str, Any]]:
+    """Read one retained version, excluding Hive partition metadata from row identity."""
+    version_root = Path(parquet_root) / f"millesime={millesime}" / f"version={version}"
+    partition = version_root / "dept=*" / "*.parquet"
+    if not list(version_root.glob("dept=*/part-*.parquet")):
+        return []
+    columns = ", ".join(f'"{column}"' for column in CANONICAL_COLUMNS)
+    connection = duckdb.connect()
+    cursor = connection.execute(
+        f"SELECT {columns} FROM read_parquet(?, hive_partitioning=true, union_by_name=true)",
+        [partition.as_posix()],
+    )
+    names = [description[0] for description in cursor.description]
+    rows = []
+    while batch := cursor.fetchmany(5_000):
+        rows.extend(dict(zip(names, values)) for values in batch)
+    connection.close()
+    return rows

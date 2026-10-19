@@ -5,7 +5,7 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from src.parse import parse_file
+from src.parse import create_view, parse_file
 
 
 @pytest.mark.parametrize(
@@ -43,12 +43,25 @@ def test_parse_known_header_variants_and_repeatably(tmp_path, filename, date_hea
     assert [path.read_bytes() for path in second] == first_bytes
     assert len(first) == 1
     year = filename.split("-")[1][:4]
-    assert f"millesime={year}/dept=2A" in first[0].as_posix()
+    assert f"millesime={year}/version=1/dept=2A" in first[0].as_posix()
     result = duckdb.connect().execute(
         "SELECT date_mutation, valeur_fonciere, insee_code FROM read_parquet(?)",
         [str(first[0])],
     ).fetchone()
     assert result == (date(2024, 3, 12), Decimal("123456.78"), "2A004")
+
+    with source.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream, delimiter="|")
+        writer.writerow(headers)
+        writer.writerow([
+            "1", "12/03/2024", "Vente", "130000,00", "2A", "004", "Ajaccio",
+            "000", "AB", "0123", "lot-1", "45,25", "1", "2", "Appartement",
+            "45", "2", "", "", "0", "", "",
+        ])
+    parse_file(source, tmp_path / "out", version=2)
+    con = create_view(tmp_path / "out")
+    assert con.execute("SELECT DISTINCT valeur_fonciere FROM dvf").fetchall() == [(Decimal("130000.00"),)]
+    con.close()
 
 
 def test_unknown_header_fails_loudly(tmp_path):

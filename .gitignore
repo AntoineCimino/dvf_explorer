@@ -5,6 +5,7 @@ __pycache__/
 *.py[cod]
 graphify-out/
 data/raw_txt/
+data/row_history/
 raw/
 *.duckdb
 *.duckdb.wal

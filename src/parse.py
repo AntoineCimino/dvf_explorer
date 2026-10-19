@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime
+import os
 import re
+import shutil
 import unicodedata
 from pathlib import Path
+import tempfile
 from typing import Iterator
 
 import duckdb
@@ -155,17 +158,26 @@ def _read_rows(source: Path) -> Iterator[dict[str, str | None]]:
             yield _normalise_row(row, number)
 
 
-def parse_file(source: Path, output_dir: Path, *, row_group_size: int = 100_000) -> list[Path]:
+def parse_file(
+    source: Path,
+    output_dir: Path,
+    *,
+    version: int = 1,
+    row_group_size: int = 100_000,
+) -> list[Path]:
     """Parse a complete DVF file to one deterministic Parquet per department.
 
     Rows are sorted by their full canonical representation before writing. The
     pinned DuckDB dependency, one thread, fixed row groups and zstd settings
-    keep output reproducible for identical input bytes.
+    keep output reproducible for identical input bytes. Source versions are
+    retained in separate partition trees.
     """
     source, output_dir = Path(source), Path(output_dir)
-    if row_group_size < 1:
+    if row_group_size < 1 or version < 1:
         raise ValueError("row_group_size must be positive")
     output_dir.mkdir(parents=True, exist_ok=True)
+    millesime = millesime_from_name(source.name)
+    staging = Path(tempfile.mkdtemp(prefix=f".dvf-{millesime}-v{version}-", dir=output_dir))
     con = duckdb.connect()
     con.execute("SET threads=1")
     con.execute("SET preserve_insertion_order=true")
@@ -196,7 +208,8 @@ def parse_file(source: Path, output_dir: Path, *, row_group_size: int = 100_000)
     )
     for department in departments:
         safe_dept = re.sub(r"[^A-Za-z0-9_-]", "_", department)
-        target_dir = output_dir / f"millesime={millesime_from_name(source.name)}" / f"dept={safe_dept}"
+        target_dir = (staging / f"millesime={millesime}" / f"version={version}"
+                      / f"dept={safe_dept}")
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / "part-00000.parquet"
         con.execute(
@@ -205,14 +218,45 @@ def parse_file(source: Path, output_dir: Path, *, row_group_size: int = 100_000)
             f"TO '{target.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE {int(row_group_size)})",
             [department],
         )
-        outputs.append(target)
+        outputs.append(output_dir / f"millesime={millesime}" / f"version={version}"
+                       / f"dept={safe_dept}" / target.name)
     con.close()
+    staged_version = staging / f"millesime={millesime}" / f"version={version}"
+    staged_version.mkdir(parents=True, exist_ok=True)
+    target_version = output_dir / f"millesime={millesime}" / f"version={version}"
+    target_version.parent.mkdir(parents=True, exist_ok=True)
+    backup = target_version.with_name(f".version-{version}.previous")
+    if backup.exists():
+        shutil.rmtree(backup)
+    if target_version.exists():
+        os.replace(target_version, backup)
+    try:
+        os.replace(staged_version, target_version)
+    except Exception:
+        if backup.exists():
+            os.replace(backup, target_version)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
+    shutil.rmtree(staging, ignore_errors=True)
     return outputs
 
 
 def create_view(parquet_root: Path, database: Path = Path(":memory:")) -> duckdb.DuckDBPyConnection:
-    """Create the unified DuckDB view over all generated partitions."""
+    """Create a unified view over the latest snapshot for each millésime."""
     root = Path(parquet_root).resolve().as_posix().replace("'", "''")
     con = duckdb.connect(str(database))
-    con.execute(f"CREATE OR REPLACE VIEW dvf AS SELECT * FROM read_parquet('{root}/**/*.parquet', hive_partitioning=true)")
+    con.execute(f"""
+        CREATE OR REPLACE VIEW dvf AS
+        WITH snapshots AS (
+            SELECT * FROM read_parquet('{root}/millesime=*/version=*/*/*.parquet',
+                                       hive_partitioning=true, union_by_name=true)
+        ), latest AS (
+            SELECT millesime, max(CAST(version AS INTEGER)) AS version
+            FROM snapshots GROUP BY millesime
+        )
+        SELECT s.* EXCLUDE (millesime, version, dept)
+        FROM snapshots s JOIN latest l
+          ON s.millesime = l.millesime AND CAST(s.version AS INTEGER) = l.version
+    """)
     return con
