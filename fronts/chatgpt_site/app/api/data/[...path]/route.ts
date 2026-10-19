@@ -47,6 +47,7 @@ export async function GET(request: Request, context: { params: Promise<{ path: s
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);
+  if (path.at(-1)?.endsWith(".json.gz")) headers.set("Content-Encoding", "gzip");
   headers.set("Accept-Ranges", "bytes");
   headers.set("ETag", object.httpEtag);
   headers.set("Cache-Control", "public, max-age=300, must-revalidate");
