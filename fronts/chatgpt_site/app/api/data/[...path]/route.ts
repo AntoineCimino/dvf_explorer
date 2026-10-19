@@ -25,7 +25,24 @@ export async function GET(request: Request, context: { params: Promise<{ path: s
   const key = safeObjectKey(path);
   if (!key) return json({ error: "Invalid dataset path." }, 400);
 
-  const object = await env.BUCKET.get(key, { range: request.headers });
+  const rangeHeader = request.headers.get("range");
+  const rangeMatch = rangeHeader?.match(/^bytes=(\d*)-(\d*)$/);
+  let requestedRange: { offset: number; length?: number } | { suffix: number } | undefined;
+  if (rangeMatch) {
+    const [, rawStart, rawEnd] = rangeMatch;
+    if (!rawStart && rawEnd) {
+      const suffix = Number(rawEnd);
+      if (Number.isSafeInteger(suffix) && suffix > 0) requestedRange = { suffix };
+    } else if (rawStart) {
+      const offset = Number(rawStart);
+      const end = rawEnd ? Number(rawEnd) : undefined;
+      if (Number.isSafeInteger(offset) && offset >= 0 &&
+          (end === undefined || (Number.isSafeInteger(end) && end >= offset))) {
+        requestedRange = { offset, ...(end === undefined ? {} : { length: end - offset + 1 }) };
+      }
+    }
+  }
+  const object = await env.BUCKET.get(key, requestedRange ? { range: requestedRange } : undefined);
   if (!object) return json({ error: "Dataset file not found." }, 404);
 
   const headers = new Headers();
@@ -35,18 +52,16 @@ export async function GET(request: Request, context: { params: Promise<{ path: s
   headers.set("Cache-Control", "public, max-age=300, must-revalidate");
   headers.set("X-Robots-Tag", ROBOTS);
   headers.set("X-Content-Type-Options", "nosniff");
-  const range = object.range;
   let status = 200;
-  if (range) {
+  if (requestedRange) {
     let start = 0;
     let length = object.size;
-    if ("suffix" in range) {
-      length = Math.min(object.size, range.suffix);
+    if ("suffix" in requestedRange) {
+      length = Math.min(object.size, requestedRange.suffix);
       start = object.size - length;
     } else {
-      if ("offset" in range && typeof range.offset === "number") start = range.offset;
-      if ("length" in range && typeof range.length === "number") length = range.length;
-      else length = object.size - start;
+      start = requestedRange.offset;
+      length = requestedRange.length ?? (object.size - start);
     }
     const end = Math.min(object.size - 1, start + length - 1);
     headers.set("Content-Range", `bytes ${start}-${end}/${object.size}`);
