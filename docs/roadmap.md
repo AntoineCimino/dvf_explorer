@@ -5,8 +5,8 @@
 Preserve successive DGFiP DVF snapshots, track transaction-row changes, and
 provide geographic summaries and transaction details through two browser
 explorers. Keep source data and generated datasets outside the public code
-repository unless a separate publication review confirms the hosting path and
-data-use requirements.
+repository. The public Site serves downloadable data from a separate host with
+explicit attribution and crawler restrictions.
 
 ## Delivery order
 
@@ -26,20 +26,21 @@ data-use requirements.
 
 - **016 — Public code repository:** publish this code repository; never publish
   the private workspace repository.
-- **000 — Hosting validation:** verify browser-compatible data access, CORS,
-  range requests, and the selected host's crawler controls before releasing any
-  transaction dataset.
-- **005 — Historical import:** provide a local, resumable import interface;
-  source paths and credentials must stay local.
+- **000 — Hosting validation:** GitHub Releases failed CORS/no-index checks;
+  the Site's same-origin R2 routes support byte ranges and no-index headers.
+- **005 — Historical import:** local `import-archive` command stages TXT or ZIP
+  snapshots, processes them in millésime/version order, and keeps source paths
+  and credentials local.
 - **006 — Geography:** discover matching geospatial resources and report match
   coverage by year.
 - **015 — Historical parcel matching:** document historical cadastre coverage
   and fallbacks for older snapshots.
-- **007 — Export contract:** define versioned national, department, commune,
-  section, and detail exports for browser clients.
-- **008 — Scheduled refresh:** discover current data resources dynamically,
-  compare every changed publication, and publish only through an approved
-  non-indexable data host.
+- **007 — Export contract:** versioned department Parquet, year-level KPI and
+  search bundles, source archives, row-history files, and an attribution-rich
+  manifest are published to the separate data host.
+- **008 — Scheduled refresh:** a weekly Actions workflow discovers resources
+  dynamically, compares changed snapshots against the previous public Parquet,
+  publishes versioned files, and commits safe source metadata only.
 - **014 — Backup and restore:** document and exercise a reproducible backup
   and restore path.
 
@@ -56,10 +57,11 @@ data-use requirements.
 ## Data handling gates
 
 - Never commit raw DVF files or generated transaction-level exports to this
-  repository.
+  repository; store downloadable snapshots and exports only on the separate
+  Site data host.
 - Do not expose private filesystem paths, archive credentials, or user account
   details in source, logs, or metadata.
 - Do not enable person re-identification or external search indexing of DVF
   information.
-- Treat publication of historical or derived data as a separate release
-  decision from publication of code.
+- Attribute the source in the Site and every manifest, preserve its reuse terms,
+  and keep all data responses out of search indexes.

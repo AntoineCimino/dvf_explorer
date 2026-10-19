@@ -178,9 +178,19 @@ def parse_file(
     output_dir.mkdir(parents=True, exist_ok=True)
     millesime = millesime_from_name(source.name)
     staging = Path(tempfile.mkdtemp(prefix=f".dvf-{millesime}-v{version}-", dir=output_dir))
-    con = duckdb.connect()
+    db_path = staging / "parse.duckdb"
+    spill_dir = staging / "spill"
+    spill_dir.mkdir()
+    con = duckdb.connect(str(db_path))
     con.execute("SET threads=1")
     con.execute("SET preserve_insertion_order=true")
+    memory_limit = os.environ.get("DVF_DUCKDB_MEMORY_LIMIT")
+    if memory_limit:
+        if not re.fullmatch(r"\d+(?:\.\d+)?\s*(?:KB|MB|GB|TB)", memory_limit, re.I):
+            raise ValueError("DVF_DUCKDB_MEMORY_LIMIT must be a size such as 3GB")
+        con.execute(f"SET memory_limit = '{memory_limit}'")
+    escaped_spill = spill_dir.as_posix().replace("'", "''")
+    con.execute(f"SET temp_directory = '{escaped_spill}'")
     con.execute("CREATE TABLE dvf (" + ", ".join(
         f'"{column}" VARCHAR' for column in CANONICAL_COLUMNS
     ) + ")")
@@ -221,6 +231,9 @@ def parse_file(
         outputs.append(output_dir / f"millesime={millesime}" / f"version={version}"
                        / f"dept={safe_dept}" / target.name)
     con.close()
+    db_path.unlink(missing_ok=True)
+    (staging / "parse.duckdb.wal").unlink(missing_ok=True)
+    shutil.rmtree(spill_dir, ignore_errors=True)
     staged_version = staging / f"millesime={millesime}" / f"version={version}"
     staged_version.mkdir(parents=True, exist_ok=True)
     target_version = output_dir / f"millesime={millesime}" / f"version={version}"

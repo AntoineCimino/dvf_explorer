@@ -4,6 +4,7 @@ from decimal import Decimal
 import duckdb
 
 from src.main import main
+from src.exports import generate_year_exports
 from src.parse import create_view
 
 
@@ -47,10 +48,42 @@ def test_ingest_tracks_versions_and_preserves_history_without_private_paths(tmp_
     assert [row["version"] for row in rows] == ["1", "2"]
     assert str(tmp_path) not in registry.read_text(encoding="utf-8")
     saved = duckdb.connect().execute(
-        "SELECT status FROM read_parquet(?)",
+        "SELECT status, json_extract_string(changes, '$.valeur_fonciere.old') "
+        "FROM read_parquet(?)",
         [str(history / "millesime=2024/versions=1-2/row_history.parquet")],
     ).fetchone()
-    assert saved == ("modified",)
+    assert saved == ("modified", "100000.00")
     view = create_view(parquet)
     assert view.execute("SELECT valeur_fonciere FROM dvf").fetchone() == (Decimal("125000.00"),)
     view.close()
+
+
+def test_year_export_contract_contains_source_attribution_and_department_details(tmp_path):
+    source = tmp_path / "valeursfoncieres-2024.txt"
+    write_source(source, "100000,00")
+    registry = tmp_path / "source_files.csv"
+    parquet = tmp_path / "parquet"
+    exports = tmp_path / "exports"
+    assert main(["ingest", str(source), "--origin", "datagouv", "--registry", str(registry), "--parquet", str(parquet)]) == 0
+    with registry.open(encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream))
+
+    result = generate_year_exports(
+        parquet, exports, year=2024, version=1,
+        source_name=row["name"], source_sha256=row["sha256"],
+    )
+
+    import gzip
+    import json
+    manifest = json.loads((exports / "manifest.json").read_text(encoding="utf-8"))
+    kpis = json.loads(gzip.decompress((exports / manifest["kpi_files"]["2024"]).read_bytes()))
+    assert manifest["source"]["url"].startswith("https://www.data.gouv.fr/datasets/")
+    assert manifest["snapshots"]["2024"]["version"] == 1
+    assert kpis["national"][0]["transaction_count"] == 1
+    detail_path = exports / manifest["departments"]["75"]["details"]["2024"]
+    result_row = duckdb.connect().execute(
+        "SELECT mutation_key, latitude, status FROM read_parquet(?)", [str(detail_path)],
+    ).fetchone()
+    assert result_row[0]
+    assert result_row[1:] == (None, None)
+    assert result["files"][-1] == "manifest.json"

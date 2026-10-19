@@ -20,7 +20,7 @@ FIELDS = (
     "url",
     "last_modified",
 )
-FILENAME = re.compile(r"valeursfoncieres-(\d{4})(?:-s\d+)?\.txt", re.IGNORECASE)
+FILENAME = re.compile(r"valeursfoncieres[-_](\d{4})(?:[-_]s\d+)?\.txt", re.IGNORECASE)
 ORIGINS = {"kdrive", "datagouv"}
 
 
