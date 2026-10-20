@@ -196,9 +196,10 @@ def _command_sync(args) -> int:
                 if not args.site_url or not remote_manifest:
                     raise FileNotFoundError(f"Previous snapshot for {year} is absent; a public data host is needed to restore it")
                 restored = restore_snapshot_year(
-                    args.site_url, remote_manifest, args.parquet, year=year, version=version - 1,
+                    args.site_url, remote_manifest, args.parquet, args.exports,
+                    year=year, version=version - 1,
                 )
-                print(f"Restored {restored} previous {year} department partitions for comparison.")
+                print(f"Restored {restored} previous {year} snapshot objects for comparison.")
         changed, version, events = ingest_file(
             source, origin="datagouv", registry_path=args.registry,
             parquet_root=args.parquet, history_root=args.history,
@@ -244,6 +245,22 @@ def _command_sync(args) -> int:
     return 0
 
 
+def _command_restore(args) -> int:
+    manifest = fetch_manifest(args.site_url, args.exports)
+    if manifest is None:
+        raise RuntimeError("The public data host has no manifest to restore")
+    restored = restore_snapshot_year(
+        args.site_url,
+        manifest,
+        args.parquet,
+        args.exports,
+        year=args.year,
+        version=args.version,
+    )
+    print(f"Restored {restored} objects for {args.year} version {args.version}.")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="dvf-explorer")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -279,6 +296,14 @@ def main(argv=None):
     sync.add_argument("--exports", type=Path, default=Path("exports"))
     sync.add_argument("--dry-run", action="store_true")
     sync.set_defaults(func=_command_sync)
+
+    restore = commands.add_parser("restore", help="restore a published snapshot from the public data host")
+    restore.add_argument("--site-url", default=os.environ.get("DVF_SITE_URL", ""), required=not bool(os.environ.get("DVF_SITE_URL")))
+    restore.add_argument("--year", type=int, required=True)
+    restore.add_argument("--version", type=int, required=True)
+    restore.add_argument("--exports", type=Path, default=Path("exports"))
+    restore.add_argument("--parquet", type=Path, default=Path("parquet"))
+    restore.set_defaults(func=_command_restore)
 
     parse = commands.add_parser("parse", help="parse one source file into Parquet")
     parse.add_argument("source", type=Path)

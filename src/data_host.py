@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import http.client
 import json
 from pathlib import Path, PurePosixPath
+import re
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
@@ -33,19 +36,63 @@ def fetch_manifest(site_url: str, exports_dir: Path) -> dict | None:
     return manifest
 
 
-def restore_snapshot_year(site_url: str, manifest: dict, parquet_root: Path, *, year: int, version: int) -> int:
-    saved = manifest.get("snapshots", {}).get(str(year), {})
-    if int(saved.get("version", -1)) != version:
-        raise ValueError(f"Published snapshot for {year} is not version {version}")
+def restore_snapshot_year(
+    site_url: str,
+    manifest: dict,
+    parquet_root: Path,
+    exports_root: Path,
+    *,
+    year: int,
+    version: int,
+) -> int:
+    saved = None
+    for candidate in manifest.get("snapshot_history", {}).get(str(year), []):
+        if int(candidate.get("version", -1)) == version:
+            saved = candidate
+            break
+    if saved is None:
+        current = manifest.get("snapshots", {}).get(str(year), {})
+        if int(current.get("version", -1)) == version:
+            saved = current
+    if saved is None:
+        raise ValueError(f"Published snapshot for {year} has no version {version}")
     details = saved.get("details", {})
     if not details:
         raise ValueError(f"Published snapshot for {year} has no department files")
     restored = 0
+    exports_root = Path(exports_root)
+    raw_source = saved.get("raw_source")
+    if raw_source:
+        raw_source = _safe_relative(raw_source)
+        raw_target = exports_root / raw_source
+        _download_object(site_url, raw_source, raw_target)
+        expected_sha256 = saved.get("source_sha256")
+        if expected_sha256:
+            digest = hashlib.sha256()
+            try:
+                with gzip.open(raw_target, "rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except (OSError, EOFError):
+                raw_target.unlink(missing_ok=True)
+                raise ValueError(f"Restored source archive for {year} version {version} is invalid") from None
+            if digest.hexdigest() != expected_sha256:
+                raw_target.unlink(missing_ok=True)
+                raise ValueError(f"Restored source checksum for {year} version {version} does not match the manifest")
+        restored += 1
     for department, relative in details.items():
+        if not re.fullmatch(r"[0-9A-Za-z]{1,3}", str(department)):
+            raise ValueError("Invalid department code in public manifest")
         _safe_relative(relative)
         target = Path(parquet_root) / f"millesime={year}" / f"version={version}" / f"dept={department}" / "part-00000.parquet"
         _download_object(site_url, relative, target)
         restored += 1
+    history_prefix = f"history/{year}/"
+    for relative in manifest.get("row_history", []) or []:
+        if isinstance(relative, str) and relative.startswith(history_prefix):
+            relative = _safe_relative(relative)
+            _download_object(site_url, relative, exports_root / relative)
+            restored += 1
     return restored
 
 

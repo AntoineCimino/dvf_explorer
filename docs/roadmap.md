@@ -44,7 +44,8 @@ et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
   dynamically, compares changed snapshots against the previous public Parquet,
   publishes versioned files, and commits safe source metadata only.
 - **014 — Backup and restore:** document and exercise a reproducible backup
-  and restore path.
+  and restore path. The public data host retains immutable source and Parquet
+  versions; `python -m src.main restore` restores a chosen snapshot locally.
 
 ### Explorer fronts and operations
 
@@ -53,8 +54,11 @@ et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
 - **012 — ChatGPT Site:** provide the same user features against the shared
   export contract, with the required no-index protections.
 - **009 — Repository-size alert:** warn before code repository growth becomes
-  operationally unsafe.
+  operationally unsafe. `.github/workflows/repository_health.yml` warns at
+  100 MiB and fails at 500 MiB.
 - **010 — Scheduled-job monitoring:** surface refresh failures and stale runs.
+  The daily health workflow fails if the latest weekly refresh failed or if
+  the most recent successful refresh is more than nine days old.
 
 ### Sale explorer usability backlog
 

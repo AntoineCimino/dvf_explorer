@@ -50,3 +50,6 @@ python -m src.main view
 The source registry stores only source basenames and must never store private
 archive paths. Do not publish DVF data that could enable re-identification or
 allow external search indexing.
+
+See [the backup and restore procedure](docs/backup_restore.md) for restoring an
+exact published year and version from the separate public data host.

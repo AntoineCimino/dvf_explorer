@@ -1,0 +1,79 @@
+name: Repository health
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  repository-size:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check GitHub repository size
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: repository } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const sizeMb = repository.size / 1024;
+            const message = `GitHub repository size: ${sizeMb.toFixed(1)} MiB (${repository.size} KiB).`;
+            core.notice(message);
+            await core.summary.addHeading('Repository size').addRaw(message).write();
+            if (repository.size >= 500 * 1024) {
+              core.setFailed(`${message} This exceeds the 500 MiB hard limit.`);
+            } else if (repository.size >= 100 * 1024) {
+              core.warning(`${message} Review repository growth; the warning threshold is 100 MiB.`);
+            }
+
+  weekly-refresh-freshness:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check weekly DVF refresh status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const workflow = await github.rest.actions.getWorkflow({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'weekly_sync.yml',
+            });
+            const { data: repository } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: workflow.data.id,
+              branch: repository.default_branch,
+              status: 'completed',
+              per_page: 100,
+            });
+            const runs = data.workflow_runs;
+            const latest = runs[0];
+            if (!latest) {
+              core.setFailed('No completed weekly DVF refresh run was found on the default branch.');
+              return;
+            }
+
+            const completedAt = new Date(latest.updated_at);
+            const ageDays = (Date.now() - completedAt.getTime()) / 86_400_000;
+            const status = `Latest DVF refresh: ${latest.conclusion}, ${ageDays.toFixed(1)} days ago (${latest.html_url}).`;
+            core.notice(status);
+            await core.summary.addHeading('DVF refresh freshness').addRaw(status).write();
+
+            if (latest.conclusion !== 'success') {
+              core.setFailed(`The latest completed DVF refresh did not succeed. ${status}`);
+            } else if (ageDays > 9) {
+              core.setFailed(`No successful DVF refresh has completed in the last 9 days. ${status}`);
+            }
