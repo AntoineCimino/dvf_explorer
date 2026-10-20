@@ -33,10 +33,14 @@ et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
 - **005 — Historical import:** local `import-archive` command stages TXT or ZIP
   snapshots, processes them in millésime/version order, and keeps source paths
   and credentials local.
-- **006 — Geography:** discover matching geospatial resources and report match
-  coverage by year.
-- **015 — Historical parcel matching:** document historical cadastre coverage
-  and fallbacks for older snapshots.
+- **006 — Geography (implemented for current publications):** discover matching
+  geospatial resources, publish the original files and department indexes, and
+  report match coverage by year. The weekly refresh handles revisions.
+- **015 — Historical parcel matching:** exact parcel matching is implemented
+  wherever an official compatible geolocation publication exists. Older rows
+  without a defensible exact match remain unlocated; do not infer coordinates
+  from an address or a neighboring parcel. Extend coverage when historical
+  archives and compatible parcel vintages are available.
 - **007 — Export contract:** versioned department Parquet, year-level KPI and
   search bundles, source archives, row-history files, and an attribution-rich
   manifest are published to the separate data host.
@@ -74,7 +78,8 @@ et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
 - **UI-005 — Shareable state:** encode territory, year, filters, sort, page, and
   selected sale in the URL; restore the view on reload and browser navigation.
 - **UI-006 — Detail and export:** show available source fields and export all
-  filtered results, with a clear notice when an export is large.
+  normalized source fields and export all filtered results, with a clear notice
+  when an export is large.
 - **UI-007 — Map and geography:** synchronize list and map selection; publish
   only defensible geographic matches and show when rows have no coordinates.
 - **UI-008 — Indicator explorer:** search, sort, paginate, and open commune
@@ -83,6 +88,12 @@ et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
   suggestions, and sale details remain usable on narrow screens and by keyboard.
 
 The source data currently present on the separate data host covers 2021–2026.
+Official geolocation files and department indexes cover 2021-S2 through
+2026-S1; measured row coverage ranges from 95.0% to 98.8%. Matching uses the
+mutation date, disposition, department, and parcel identifier. Rows without a
+unique valid match remain in the results without coordinates. Both source CSVs
+and indexes are downloadable from the Site and refreshed weekly.
+
 Historical local publications from 2014 onward still need to be located and
 imported before that part of the goal is complete. The sale table currently
 queries published Parquet files in the browser; nationwide searches can involve

@@ -109,6 +109,44 @@ const SORT_COLUMNS: Array<{ key: SortColumn; label: string }> = [
   { key: "nombre_pieces_principales", label: "Pièces" }, { key: "surface_reelle_bati", label: "Surface" },
   { key: "surface_terrain", label: "Terrain" }, { key: "price_per_m2", label: "€/m²" }, { key: "valeur_fonciere", label: "Prix" },
 ];
+const SALE_FIELD_LABELS = [
+  ["no_disposition", "Disposition"],
+  ["date_mutation", "Date de mutation"],
+  ["nature_mutation", "Nature de la mutation"],
+  ["valeur_fonciere", "Valeur foncière"],
+  ["no_voie", "Numéro de voie"],
+  ["btq", "Indice de répétition"],
+  ["type_voie", "Type de voie"],
+  ["code_voie", "Code voie"],
+  ["voie", "Voie"],
+  ["code_postal", "Code postal"],
+  ["commune", "Commune"],
+  ["code_departement", "Département"],
+  ["code_commune", "Code commune"],
+  ["insee_code", "Code INSEE"],
+  ["prefixe_section", "Préfixe de section"],
+  ["section", "Section cadastrale"],
+  ["no_plan", "Numéro de plan"],
+  ["no_volume", "Numéro de volume"],
+  ["lot_1", "Lot 1"], ["carrez_1", "Surface Carrez du lot 1"],
+  ["lot_2", "Lot 2"], ["carrez_2", "Surface Carrez du lot 2"],
+  ["lot_3", "Lot 3"], ["carrez_3", "Surface Carrez du lot 3"],
+  ["lot_4", "Lot 4"], ["carrez_4", "Surface Carrez du lot 4"],
+  ["lot_5", "Lot 5"], ["carrez_5", "Surface Carrez du lot 5"],
+  ["nombre_lots", "Nombre de lots"],
+  ["code_type_local", "Code du type de local"],
+  ["type_local", "Type de local"],
+  ["surface_reelle_bati", "Surface réelle bâtie"],
+  ["nombre_pieces_principales", "Pièces principales"],
+  ["code_nature_culture", "Code nature de culture"],
+  ["nature_culture", "Nature de culture"],
+  ["nature_culture_speciale", "Nature de culture spéciale"],
+  ["surface_terrain", "Surface du terrain"],
+] as const;
+const SALE_SURFACE_FIELDS = new Set<string>([
+  "surface_reelle_bati", "surface_terrain",
+  "carrez_1", "carrez_2", "carrez_3", "carrez_4", "carrez_5",
+]);
 
 let databasePromise: Promise<import("@duckdb/duckdb-wasm").AsyncDuckDB> | null = null;
 
@@ -150,6 +188,18 @@ function euro(value: unknown) {
     currency: "EUR",
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+function displaySaleField(key: string, value: unknown): string | null {
+  if (value == null || (typeof value === "string" && !value.trim())) return null;
+  if (key === "valeur_fonciere") return euro(value);
+  if (typeof value === "number" && SALE_SURFACE_FIELDS.has(key)) {
+    return `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(value)} m²`;
+  }
+  if (typeof value === "number") {
+    return new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(value);
+  }
+  return String(value);
 }
 
 function quoteSql(value: string) {
@@ -905,7 +955,31 @@ export default function ExplorerClient() {
                   {sales.some((sale) => sale.latitude != null && sale.longitude != null && Number.isFinite(Number(sale.latitude)) && Number.isFinite(Number(sale.longitude))) ? <TransactionMap sales={sales} center={mapCenter} onSelect={selectSale} /> : <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-5 text-center"><p className="max-w-lg text-sm text-slate-600">Aucune vente de cette page n’a de coordonnée parcellaire vérifiée. Les autres ventes restent consultables dans la liste.</p></div>}
                   {geographyCoverage && <p className="mt-2 text-xs text-slate-500">Rapprochement parcellaire validé : {number(geographyCoverage.matched)} sur {number(geographyCoverage.total)} lignes ({new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 1 }).format(geographyCoverage.rate)}) pour la période choisie. Source : DVF géolocalisées, Etalab.</p>}
                 </div>}
-                {selectedSale && <article className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-emerald-900">Détail de la ligne DVF</p><h3 className="mt-1 text-lg font-semibold">{String(selectedSale.commune ?? "Commune non précisée")} · {String(selectedSale.date_mutation ?? "Date non précisée")}</h3></div><button onClick={() => { const url = new URL(window.location.href); url.searchParams.set("sale", String(selectedSale.mutation_key ?? "")); void navigator.clipboard?.writeText(url.toString()); }} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium">Copier le lien</button></div><dl className="mt-4 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">{([["Valeur foncière", euro(selectedSale.valeur_fonciere)], ["Nature", selectedSale.nature_mutation], ["Type de local", selectedSale.type_local], ["Pièces principales", selectedSale.nombre_pieces_principales], ["Surface bâtie", selectedSale.surface_reelle_bati ? `${number(selectedSale.surface_reelle_bati)} m²` : "—"], ["Surface terrain", selectedSale.surface_terrain ? `${number(selectedSale.surface_terrain)} m²` : "—"], ["Adresse publiée", [selectedSale.no_voie, selectedSale.btq, selectedSale.type_voie, selectedSale.voie].filter(Boolean).join(" ") || "Non renseignée"], ["Code postal / INSEE", `${String(selectedSale.code_postal ?? "—")} / ${String(selectedSale.insee_code ?? "—")}`], ["Parcelle", [selectedSale.prefixe_section, selectedSale.section, selectedSale.no_plan].filter(Boolean).join(" ") || "Non renseignée"]] as Array<[string, unknown]>).map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-0.5 font-medium">{String(value ?? "—")}</dd></div>)}</dl><p className="mt-3 text-xs text-slate-600">Une mutation peut apparaître sur plusieurs lignes lorsqu’elle porte sur plusieurs biens ou parcelles. Cette fiche décrit la ligne source sélectionnée.</p></article>}
+                {selectedSale && <article className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-emerald-900">Détail de la ligne DVF</p>
+                      <h3 className="mt-1 text-lg font-semibold">{String(selectedSale.commune ?? "Commune non précisée")} · {String(selectedSale.date_mutation ?? "Date non précisée")}</h3>
+                    </div>
+                    <button onClick={() => { const url = new URL(window.location.href); url.searchParams.set("sale", String(selectedSale.mutation_key ?? "")); void navigator.clipboard?.writeText(url.toString()); }} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium">Copier le lien</button>
+                  </div>
+                  <dl className="mt-4 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                    {([["Valeur foncière", euro(selectedSale.valeur_fonciere)], ["Nature", selectedSale.nature_mutation], ["Type de local", selectedSale.type_local], ["Pièces principales", selectedSale.nombre_pieces_principales], ["Surface bâtie", selectedSale.surface_reelle_bati ? `${number(selectedSale.surface_reelle_bati)} m²` : "—"], ["Surface terrain", selectedSale.surface_terrain ? `${number(selectedSale.surface_terrain)} m²` : "—"], ["Adresse publiée", [selectedSale.no_voie, selectedSale.btq, selectedSale.type_voie, selectedSale.voie].filter(Boolean).join(" ") || "Non renseignée"], ["Code postal / INSEE", `${String(selectedSale.code_postal ?? "—")} / ${String(selectedSale.insee_code ?? "—")}`], ["Parcelle", [selectedSale.prefixe_section, selectedSale.section, selectedSale.no_plan].filter(Boolean).join(" ") || "Non renseignée"]] as Array<[string, unknown]>).map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-0.5 font-medium">{String(value ?? "—")}</dd></div>)}
+                  </dl>
+                  <details className="mt-4 rounded-md border border-emerald-900/10 bg-white/70 px-3 py-2">
+                    <summary className="cursor-pointer text-sm font-medium text-emerald-950">Tous les champs publiés disponibles</summary>
+                    <p className="mt-2 text-xs text-slate-500">Les champs vides dans la ligne source sont masqués.</p>
+                    <dl className="mt-3 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                      {SALE_FIELD_LABELS.map(([key, label]) => {
+                        const value = displaySaleField(key, selectedSale[key]);
+                        return value === null ? null : <div key={key}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-0.5 break-words font-medium">{value}</dd></div>;
+                      })}
+                      {displaySaleField("latitude", selectedSale.latitude) !== null && <div><dt className="text-xs text-slate-500">Latitude parcellaire (Etalab)</dt><dd className="mt-0.5 font-medium">{displaySaleField("latitude", selectedSale.latitude)}</dd></div>}
+                      {displaySaleField("longitude", selectedSale.longitude) !== null && <div><dt className="text-xs text-slate-500">Longitude parcellaire (Etalab)</dt><dd className="mt-0.5 font-medium">{displaySaleField("longitude", selectedSale.longitude)}</dd></div>}
+                    </dl>
+                  </details>
+                  <p className="mt-3 text-xs text-slate-600">Une mutation peut apparaître sur plusieurs lignes lorsqu’elle porte sur plusieurs biens ou parcelles. Cette fiche décrit la ligne source sélectionnée.</p>
+                </article>}
               </div>
             </div>
           )}
