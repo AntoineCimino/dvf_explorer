@@ -33,6 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          date +%s > /tmp/dvf-sync-start
           python -m src.main sync --site-url "$DVF_SITE_URL" | tee /tmp/dvf-refresh-summary.txt
           python -m src.main sync-geography --site-url "$DVF_SITE_URL" | tee -a /tmp/dvf-refresh-summary.txt
           cat /tmp/dvf-refresh-summary.txt >> "$GITHUB_STEP_SUMMARY"
@@ -49,3 +50,9 @@ jobs:
           git add source_files.csv
           git commit -m "data(dvf): record published source versions"
           git push
+      - name: Report run summary for dev_monitor
+        if: always()
+        shell: bash
+        run: |
+          start=$(cat /tmp/dvf-sync-start 2>/dev/null || date +%s)
+          python -m src.run_summary /tmp/dvf-refresh-summary.txt "$(( $(date +%s) - start ))"

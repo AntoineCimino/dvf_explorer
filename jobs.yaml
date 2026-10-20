@@ -7,8 +7,16 @@ jobs:
     workflow: {repo: AntoineCimino/dvf_explorer, file: weekly_sync.yml}
     schedule: Mondays 06:23 UTC
     schedule_cron: ["23 6 * * 1"]  # GitHub cron is UTC
-    last_run: {source: gh}
+    # Counters come from the run's annotations (docs/run_summary.md):
+    # "::notice title=run-summary::k=v ..." and optional "::warning title=run-alert::<reason>".
+    last_run: {source: gh}   # dev_monitor reads the run-summary / run-alert annotations (docs/run_summary.md)
     # one week + 12h margin; non-success conclusion = ERROR.
-    # No ALERTE path: the gh collector only reads the run conclusion.
     sanity: {max_age_hours: 180}
     severity: medium
+    counter_labels:
+      new_version: New version
+      files_downloaded: Files downloaded
+      rows_added: Rows added
+      rows_changed: Rows changed
+      rows_removed: Rows removed
+      duration_seconds: Duration (s)
