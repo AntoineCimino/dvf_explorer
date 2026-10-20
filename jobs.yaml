@@ -1,0 +1,14 @@
+version: 1
+jobs:
+  - id: dvf-explorer-weekly-sync
+    name: DVF weekly data.gouv sync
+    location: github-actions
+    where: cloud
+    workflow: {repo: AntoineCimino/dvf_explorer, file: weekly_sync.yml}
+    schedule: Mondays 06:23 UTC
+    schedule_cron: ["23 6 * * 1"]  # GitHub cron is UTC
+    last_run: {source: gh}
+    # one week + 12h margin; non-success conclusion = ERROR.
+    # No ALERTE path: the gh collector only reads the run conclusion.
+    sanity: {max_age_hours: 180}
+    severity: medium
