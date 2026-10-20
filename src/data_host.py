@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import gzip
 import hashlib
 import http.client
@@ -181,6 +182,13 @@ def upload_exports(
                 raise FileNotFoundError(f"Missing export file: {safe_path}")
             files.append(candidate)
     files.sort(key=lambda path: (path.name == "manifest.json", path.as_posix()))
-    for path in files:
+    data_files = [path for path in files if path.name != "manifest.json"]
+    manifest_files = [path for path in files if path.name == "manifest.json"]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(
+            lambda path: _upload_one(site_url, path.relative_to(root).as_posix(), path, token),
+            data_files,
+        ))
+    for path in manifest_files:
         _upload_one(site_url, path.relative_to(root).as_posix(), path, token)
     return len(files)
