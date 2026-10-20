@@ -55,15 +55,23 @@ type ExportData = {
 
 type Sale = Record<string, unknown>;
 type Tab = "kpis" | "details";
+type ResultsView = "split" | "list" | "map";
+type KpiSort = "commune" | "transaction_count" | "median_price" | "median_price_per_m2" | "median_surface";
 type Filters = {
   from: string;
   to: string;
   minPrice: string;
   maxPrice: string;
   minSurface: string;
+  maxSurface: string;
+  minLand: string;
+  maxLand: string;
   rooms: string;
   localType: string;
   mutation: string;
+  department: string;
+  postalCode: string;
+  address: string;
 };
 
 const EMPTY_FILTERS: Filters = {
@@ -72,10 +80,24 @@ const EMPTY_FILTERS: Filters = {
   minPrice: "",
   maxPrice: "",
   minSurface: "",
+  maxSurface: "",
+  minLand: "",
+  maxLand: "",
   rooms: "",
   localType: "",
   mutation: "",
+  department: "",
+  postalCode: "",
+  address: "",
 };
+
+type SortColumn = "date_mutation" | "commune" | "nature_mutation" | "type_local" | "nombre_pieces_principales" | "surface_reelle_bati" | "surface_terrain" | "valeur_fonciere" | "price_per_m2";
+const SORT_COLUMNS: Array<{ key: SortColumn; label: string }> = [
+  { key: "date_mutation", label: "Date" }, { key: "commune", label: "Commune" },
+  { key: "nature_mutation", label: "Mutation" }, { key: "type_local", label: "Bien" },
+  { key: "nombre_pieces_principales", label: "Pièces" }, { key: "surface_reelle_bati", label: "Surface" },
+  { key: "surface_terrain", label: "Terrain" }, { key: "price_per_m2", label: "€/m²" }, { key: "valeur_fonciere", label: "Prix" },
+];
 
 let databasePromise: Promise<import("@duckdb/duckdb-wasm").AsyncDuckDB> | null = null;
 
@@ -137,6 +159,29 @@ function isDate(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function validateFilters(filters: Filters) {
+  if (filters.from && !isDate(filters.from)) return "La date de début est invalide.";
+  if (filters.to && !isDate(filters.to)) return "La date de fin est invalide.";
+  if (filters.from && filters.to && filters.from > filters.to) return "La date de début doit précéder la date de fin.";
+  const ranges = [
+    ["le prix", filters.minPrice, filters.maxPrice],
+    ["la surface bâtie", filters.minSurface, filters.maxSurface],
+    ["la surface du terrain", filters.minLand, filters.maxLand],
+  ] as const;
+  for (const [label, minimum, maximum] of ranges) {
+    for (const value of [minimum, maximum]) {
+      if (value && (sqlNumber(value) === "" || !Number.isFinite(Number(value.replace(",", "."))))) {
+        return `Valeur incorrecte pour ${label} : saisissez un nombre positif.`;
+      }
+    }
+    if (minimum && maximum && Number(minimum.replace(",", ".")) > Number(maximum.replace(",", "."))) {
+      return `La valeur minimale de ${label} doit être inférieure à sa valeur maximale.`;
+    }
+  }
+  if (filters.postalCode && !/^\d{5}$/.test(filters.postalCode.trim())) return "Saisissez un code postal à cinq chiffres.";
+  return "";
+}
+
 function TransactionMap({
   sales,
   center,
@@ -162,6 +207,7 @@ function TransactionMap({
       }).addTo(map);
       const cluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 45 });
       for (const sale of sales) {
+        if (sale.latitude == null || sale.longitude == null) continue;
         const latitude = Number(sale.latitude);
         const longitude = Number(sale.longitude);
         if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
@@ -208,15 +254,120 @@ export default function ExplorerClient() {
   const [query, setQuery] = useState("");
   const [place, setPlace] = useState<Place | null>(null);
   const [year, setYear] = useState("all");
+  const [department, setDepartment] = useState("all");
   const [tab, setTab] = useState<Tab>("kpis");
+  const [resultsView, setResultsView] = useState<ResultsView>("split");
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sales, setSales] = useState<Sale[]>([]);
+  const [queryFiles, setQueryFiles] = useState<string[]>([]);
+  const [queryPredicate, setQueryPredicate] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(50);
+  const [communeQuery, setCommuneQuery] = useState("");
+  const [communePage, setCommunePage] = useState(0);
+  const [communePageSize, setCommunePageSize] = useState(100);
+  const [communeSort, setCommuneSort] = useState<{ column: KpiSort; direction: "ASC" | "DESC" }>({ column: "transaction_count", direction: "DESC" });
+  const [sort, setSort] = useState<{ column: SortColumn; direction: "ASC" | "DESC" }>({ column: "date_mutation", direction: "DESC" });
+  const [resultCount, setResultCount] = useState<number | null>(null);
   const [querying, setQuerying] = useState(false);
   const [duckError, setDuckError] = useState("");
   const [banPlaces, setBanPlaces] = useState<Place[]>([]);
+  const [urlHydrated, setUrlHydrated] = useState(false);
+  const popNavigationRef = useRef(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const nextFilters = { ...EMPTY_FILTERS };
+    for (const key of Object.keys(EMPTY_FILTERS) as Array<keyof Filters>) {
+      nextFilters[key] = params.get(key) ?? "";
+    }
+    const requestedYear = params.get("year");
+    if (requestedYear) setYear(requestedYear);
+    const requestedDepartment = params.get("department");
+    if (requestedDepartment) setDepartment(requestedDepartment);
+    const requestedTab = params.get("tab");
+    if (requestedTab === "details" || requestedTab === "kpis") setTab(requestedTab);
+    setHasSearched(params.get("searched") === "1");
+    const requestedView = params.get("view");
+    if (requestedView === "list" || requestedView === "map" || requestedView === "split") setResultsView(requestedView);
+    const requestedPage = Number(params.get("page"));
+    if (Number.isInteger(requestedPage) && requestedPage >= 0) setPage(requestedPage);
+    const requestedSize = Number(params.get("size"));
+    if ([25, 50, 100].includes(requestedSize)) setPageSize(requestedSize);
+    const requestedSort = params.get("sort") as SortColumn | null;
+    if (requestedSort && SORT_COLUMNS.some((column) => column.key === requestedSort)) {
+      setSort({ column: requestedSort, direction: params.get("dir") === "ASC" ? "ASC" : "DESC" });
+    }
+    setFilters(nextFilters);
+    setAppliedFilters(nextFilters);
+    setUrlHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!urlHydrated) return;
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(appliedFilters)) if (value) params.set(key, value);
+    params.set("year", year);
+    params.set("department", department);
+    params.set("tab", tab);
+    params.set("view", resultsView);
+    params.set("size", String(pageSize));
+    params.set("page", String(page));
+    params.set("sort", sort.column);
+    params.set("dir", sort.direction);
+    params.set("searched", hasSearched ? "1" : "0");
+    const currentUrl = new URLSearchParams(window.location.search);
+    const placeCode = place?.insee_code ?? currentUrl.get("place");
+    const saleKey = selectedSale?.mutation_key ?? currentUrl.get("sale");
+    if (placeCode) params.set("place", placeCode);
+    if (saleKey) params.set("sale", String(saleKey));
+    const search = params.toString();
+    if (window.location.search !== `?${search}`) {
+      if (popNavigationRef.current) window.history.replaceState(null, "", `${window.location.pathname}?${search}`);
+      else window.history.pushState(null, "", `${window.location.pathname}?${search}`);
+    }
+    popNavigationRef.current = false;
+  }, [appliedFilters, department, hasSearched, page, pageSize, place, resultsView, selectedSale, sort, tab, urlHydrated, year]);
+
+  useEffect(() => {
+    const restore = () => {
+      popNavigationRef.current = true;
+      const params = new URLSearchParams(window.location.search);
+      const restoredFilters = { ...EMPTY_FILTERS };
+      for (const key of Object.keys(EMPTY_FILTERS) as Array<keyof Filters>) restoredFilters[key] = params.get(key) ?? "";
+      setFilters(restoredFilters);
+      setAppliedFilters(restoredFilters);
+      setYear(params.get("year") ?? "all");
+      setDepartment(params.get("department") ?? "all");
+      const restoredTab = params.get("tab");
+      if (restoredTab === "details" || restoredTab === "kpis") setTab(restoredTab);
+      const restoredView = params.get("view");
+      if (restoredView === "split" || restoredView === "list" || restoredView === "map") setResultsView(restoredView);
+      const restoredPage = Number(params.get("page"));
+      setPage(Number.isInteger(restoredPage) && restoredPage >= 0 ? restoredPage : 0);
+      const restoredSize = Number(params.get("size"));
+      if ([25, 50, 100].includes(restoredSize)) setPageSize(restoredSize);
+      const restoredSort = params.get("sort") as SortColumn | null;
+      if (restoredSort && SORT_COLUMNS.some((column) => column.key === restoredSort)) setSort({ column: restoredSort, direction: params.get("dir") === "ASC" ? "ASC" : "DESC" });
+      setPlace(null);
+      setSelectedSale(null);
+      setQueryFiles([]);
+      setHasSearched(params.get("searched") === "1");
+      restoredQueryRan.current = false;
+    };
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, []);
+
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get("place");
+    if (!wanted || place || !places.length) return;
+    const found = places.find((item) => item.insee_code === wanted && item.kind === "commune");
+    if (found) setPlace(found);
+  }, [places, place]);
 
   useEffect(() => {
     let cancelled = false;
@@ -251,6 +402,8 @@ export default function ExplorerClient() {
         }
         if (cancelled) return;
         setManifest(nextManifest);
+        const urlYear = new URLSearchParams(window.location.search).get("year");
+        if (!urlYear) setYear(Object.keys(nextManifest.kpi_files ?? {}).sort((a, b) => Number(b) - Number(a))[0] ?? "all");
         setKpis(nextKpis);
         setPlaces(Array.from(placesByKey.values()));
         setLoadState("ready");
@@ -264,17 +417,36 @@ export default function ExplorerClient() {
     return () => { cancelled = true; };
   }, []);
 
-  const national = year === "all"
-    ? kpis.national?.find((item) => item.year === 0) ?? kpis.national?.[0]
-    : kpis.national?.find((item) => String(item.year) === year);
+  const national = useMemo(() => {
+    if (year !== "all") return kpis.national?.find((item) => String(item.year) === year);
+    const rows = kpis.national ?? [];
+    if (!rows.length) return undefined;
+    return { ...rows[0], year: 0, transaction_count: rows.reduce((total, row) => total + row.transaction_count, 0), median_price: null, median_price_per_m2: null, median_surface: null };
+  }, [kpis.national, year]);
   const visibleCommunes = useMemo(() => {
     const yearFiltered = year === "all" ? (kpis.communes ?? [])
       : (kpis.communes ?? []).filter((item) => String(item.year) === year);
     const source = place
       ? yearFiltered.filter((item) => item.insee_code === place.insee_code)
       : yearFiltered;
-    return source.slice(0, 100);
-  }, [kpis.communes, place, year]);
+    const term = communeQuery.trim().toLocaleLowerCase("fr");
+    const filtered = source.filter((item) => !term || item.commune.toLocaleLowerCase("fr").includes(term)
+      || item.insee_code.includes(term) || (item.code_postal ?? "").includes(term));
+    filtered.sort((left, right) => {
+      const a = left[communeSort.column];
+      const b = right[communeSort.column];
+      const compared = typeof a === "string" && typeof b === "string"
+        ? a.localeCompare(b, "fr")
+        : Number(a ?? 0) - Number(b ?? 0);
+      return communeSort.direction === "ASC" ? compared : -compared;
+    });
+    return filtered.slice(communePage * communePageSize, (communePage + 1) * communePageSize);
+  }, [communePage, communePageSize, communeQuery, communeSort, kpis.communes, place, year]);
+  const communeCount = useMemo(() => (kpis.communes ?? []).filter((item) =>
+    (year === "all" || String(item.year) === year) && (!place || item.insee_code === place.insee_code)
+    && (!communeQuery.trim() || item.commune.toLocaleLowerCase("fr").includes(communeQuery.trim().toLocaleLowerCase("fr"))
+      || item.insee_code.includes(communeQuery.trim()) || (item.code_postal ?? "").includes(communeQuery.trim())),
+  ).length, [communeQuery, kpis.communes, place, year]);
   const availableYears = useMemo(() => Array.from(new Set(
     (kpis.communes ?? []).map((item) => String(item.year)),
   )).sort((a, b) => Number(b) - Number(a)), [kpis.communes]);
@@ -289,14 +461,25 @@ export default function ExplorerClient() {
     ).slice(0, 8);
   }, [places, query]);
 
-  const runDetailsQuery = useCallback(async (nextPage: number, nextFilters: Filters) => {
-    if (!place || !manifest) return;
-    const details = manifest.departments[place.department]?.details;
-    const sources = typeof details === "string"
-      ? [details]
-      : year === "all"
+  const runDetailsQuery = useCallback(async (
+    nextPage: number,
+    nextFilters: Filters,
+    nextSort = sort,
+    nextPageSize = pageSize,
+  ) => {
+    if (!manifest) return;
+    restoredQueryRan.current = true;
+    setHasSearched(true);
+    const scopedDepartment = place?.department ?? (nextFilters.department || department);
+    const selectedDepartments = scopedDepartment === "all"
+      ? Object.keys(manifest.departments)
+      : [scopedDepartment];
+    const sources = selectedDepartments.flatMap((code) => {
+      const details = manifest.departments[code]?.details;
+      return typeof details === "string" ? [details] : year === "all"
         ? Object.values(details ?? {})
         : [details?.[year]].filter((item): item is string => Boolean(item));
+    });
     if (!sources.length) {
       setDuckError("Aucun fichier de détail n’est disponible pour ce département.");
       return;
@@ -307,19 +490,29 @@ export default function ExplorerClient() {
       const duckdb = await import("@duckdb/duckdb-wasm");
       const database = await getDatabase();
       const connection = await database.connect();
-      const fileNames = sources.map((_, index) => `dvf-${place.department}-${year}-${index}.parquet`);
+      const fileNames = sources.map((source, index) => `dvf-${year}-${index}-${source.split("/").at(-1) ?? "data"}`);
       await Promise.all(sources.map((source, index) => {
         const url = new URL(`/api/data/${source}`, window.location.origin).toString();
         return database.registerFileURL(fileNames[index], url, duckdb.DuckDBDataProtocol.HTTP, false);
       }));
 
-      const conditions = [`insee_code = '${quoteSql(place.insee_code)}'`];
+      const conditions: string[] = [];
+      if (place) conditions.push(`insee_code = '${quoteSql(place.insee_code)}'`);
+      if (nextFilters.department || department !== "all") {
+        const selected = nextFilters.department || department;
+        if (selected !== "all") conditions.push(`code_departement = '${quoteSql(selected)}'`);
+      }
+      if (nextFilters.postalCode.trim()) conditions.push(`code_postal = '${quoteSql(nextFilters.postalCode.trim())}'`);
+      if (nextFilters.address.trim()) conditions.push(`concat_ws(' ', no_voie, btq, type_voie, voie) ILIKE '%${quoteSql(nextFilters.address.trim())}%'`);
       if (nextFilters.from && isDate(nextFilters.from)) conditions.push(`date_mutation >= DATE '${nextFilters.from}'`);
       if (nextFilters.to && isDate(nextFilters.to)) conditions.push(`date_mutation <= DATE '${nextFilters.to}'`);
       if (year !== "all" && /^\d{4}$/.test(year)) conditions.push(`EXTRACT(YEAR FROM date_mutation) = ${Number(year)}`);
       if (sqlNumber(nextFilters.minPrice)) conditions.push(`valeur_fonciere >= ${sqlNumber(nextFilters.minPrice)}`);
       if (sqlNumber(nextFilters.maxPrice)) conditions.push(`valeur_fonciere <= ${sqlNumber(nextFilters.maxPrice)}`);
       if (sqlNumber(nextFilters.minSurface)) conditions.push(`surface_reelle_bati >= ${sqlNumber(nextFilters.minSurface)}`);
+      if (sqlNumber(nextFilters.maxSurface)) conditions.push(`surface_reelle_bati <= ${sqlNumber(nextFilters.maxSurface)}`);
+      if (sqlNumber(nextFilters.minLand)) conditions.push(`surface_terrain >= ${sqlNumber(nextFilters.minLand)}`);
+      if (sqlNumber(nextFilters.maxLand)) conditions.push(`surface_terrain <= ${sqlNumber(nextFilters.maxLand)}`);
       if (nextFilters.rooms && /^\d+$/.test(nextFilters.rooms)) {
         conditions.push(nextFilters.rooms === "6"
           ? "nombre_pieces_principales >= 6"
@@ -329,17 +522,30 @@ export default function ExplorerClient() {
       if (nextFilters.mutation) conditions.push(`nature_mutation = '${quoteSql(nextFilters.mutation)}'`);
 
       const parquetFiles = `[${fileNames.map((name) => `'${quoteSql(name)}'`).join(",")}]`;
-      const sql = `SELECT date_mutation, nature_mutation, valeur_fonciere,
-          type_local, surface_reelle_bati, nombre_pieces_principales,
-          mutation_key, status, flag, latitude, longitude
-        FROM read_parquet(${parquetFiles}) WHERE ${conditions.join(" AND ")}
-        ORDER BY date_mutation DESC LIMIT 51 OFFSET ${nextPage * 50}`;
+      const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+      setQueryFiles(fileNames);
+      setQueryPredicate(where);
+      const orderColumn = nextSort.column === "price_per_m2"
+        ? "valeur_fonciere / NULLIF(surface_reelle_bati, 0)"
+        : nextSort.column;
+      const sql = `SELECT date_mutation, nature_mutation, valeur_fonciere, commune,
+          code_departement, code_postal, insee_code, no_voie, btq, type_voie, voie,
+          prefixe_section, section, no_plan, no_disposition, type_local, surface_reelle_bati,
+          surface_terrain, nombre_pieces_principales,
+          valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2,
+          mutation_key, status, flag, latitude, longitude,
+          count(*) OVER() AS _total
+        FROM read_parquet(${parquetFiles}, union_by_name=true) ${where}
+        ORDER BY ${orderColumn} ${nextSort.direction} NULLS LAST, mutation_key ASC
+        LIMIT ${nextPageSize + 1} OFFSET ${nextPage * nextPageSize}`;
       try {
         const result = await connection.query(sql);
         const records = result.toArray().map((item) => item.toJSON() as Sale);
-        setSales(records.slice(0, 50));
+        setResultCount(records.length ? Number(records[0]._total) : nextPage === 0 ? 0 : resultCount);
+        setSales(records.slice(0, nextPageSize));
         setPage(nextPage);
-        if (nextPage === 0) setSelectedSale(records[0] ?? null);
+        const wantedSale = nextPage === 0 ? new URLSearchParams(window.location.search).get("sale") : null;
+        setSelectedSale(records.find((record) => String(record.mutation_key ?? "") === wantedSale) ?? records[0] ?? null);
       } finally {
         await connection.close();
       }
@@ -348,7 +554,16 @@ export default function ExplorerClient() {
     } finally {
       setQuerying(false);
     }
-  }, [manifest, place, year]);
+  }, [department, manifest, pageSize, place, resultCount, sort, year]);
+
+  const restoredQueryRan = useRef(false);
+  useEffect(() => {
+    if (!hasSearched || !urlHydrated || !manifest || restoredQueryRan.current) return;
+    const requestedPlace = new URLSearchParams(window.location.search).get("place");
+    if (requestedPlace && !place) return;
+    restoredQueryRan.current = true;
+    void runDetailsQuery(page, appliedFilters);
+  }, [appliedFilters, hasSearched, manifest, page, place, runDetailsQuery, urlHydrated]);
 
   async function searchAddress(event: FormEvent) {
     event.preventDefault();
@@ -368,11 +583,12 @@ export default function ExplorerClient() {
       };
       const found = (result.features ?? []).map((feature): Place => {
         const properties = feature.properties ?? {};
+        const cityCode = String(properties.citycode ?? "");
         return {
           label: String(properties.label ?? "Adresse"),
           kind: "commune",
           insee_code: String(properties.citycode ?? ""),
-          department: String(properties.citycode ?? "").slice(0, 2),
+          department: cityCode.startsWith("97") ? cityCode.slice(0, 3) : cityCode.slice(0, 2),
           code_postal: String(properties.postcode ?? ""),
           longitude: feature.geometry?.coordinates?.[0],
           latitude: feature.geometry?.coordinates?.[1],
@@ -390,23 +606,62 @@ export default function ExplorerClient() {
     setQuery(next.label);
     setTab("kpis");
     setSales([]);
+    setQueryFiles([]);
+    setQueryPredicate("");
+    setHasSearched(false);
     setSelectedSale(null);
     setBanPlaces([]);
     setPage(0);
+    setDepartment(next.department);
+    setResultCount(null);
+    setFilters((current) => ({ ...current, department: "" }));
+    setAppliedFilters((current) => ({ ...current, department: "" }));
   }
 
-  function exportCsv() {
+  function clearPlace() {
+    setPlace(null);
+    setQuery("");
+    setDepartment("all");
+    setSales([]);
+    setQueryFiles([]);
+    setQueryPredicate("");
+    setHasSearched(false);
+    setSelectedSale(null);
+    setPage(0);
+    setResultCount(null);
+  }
+
+  async function exportCsv() {
     if (!sales.length) return;
-    const columns = Object.keys(sales[0]);
-    const text = [columns.map(csvCell).join(","), ...sales.map((row) =>
-      columns.map((column) => csvCell(row[column])).join(","),
-    )].join("\r\n");
-    const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `dvf-${place?.insee_code ?? "france"}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    if (!queryFiles.length) return;
+    if ((resultCount ?? 0) > 100_000 && !window.confirm(`Cette exportation contient environ ${number(resultCount)} lignes et peut être volumineuse. Continuer ?`)) return;
+    setQuerying(true);
+    setDuckError("");
+    try {
+      const duckdb = await import("@duckdb/duckdb-wasm");
+      const database = await getDatabase();
+      const connection = await database.connect();
+      try {
+        const parquetFiles = `[${queryFiles.map((name) => `'${quoteSql(name)}'`).join(",")}]`;
+        const exportOrder = sort.column === "price_per_m2" ? "valeur_fonciere / NULLIF(surface_reelle_bati, 0)" : sort.column;
+        const result = await connection.query(`SELECT *, valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2 FROM read_parquet(${parquetFiles}, union_by_name=true) ${queryPredicate} ORDER BY ${exportOrder} ${sort.direction} NULLS LAST, mutation_key ASC`);
+        const records = result.toArray().map((item) => item.toJSON() as Sale);
+        if (!records.length) return;
+        const columns = Object.keys(records[0]).filter((column) => !column.startsWith("_"));
+        const chunks = ["\uFEFF", columns.map(csvCell).join(",") + "\r\n"];
+        for (let offset = 0; offset < records.length; offset += 2000) {
+          chunks.push(records.slice(offset, offset + 2000).map((row) => columns.map((column) => csvCell(row[column])).join(",")).join("\r\n") + "\r\n");
+        }
+        const url = URL.createObjectURL(new Blob(chunks, { type: "text/csv;charset=utf-8" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `dvf-${place?.insee_code ?? department}-${year}.csv`;
+        link.click();
+        URL.revokeObjectURL(url);
+      } finally { await connection.close(); }
+    } catch (error) {
+      setDuckError(error instanceof Error ? `Export impossible : ${error.message}` : "Export CSV impossible.");
+    } finally { setQuerying(false); }
   }
 
   function setFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
@@ -438,6 +693,7 @@ export default function ExplorerClient() {
               onChange={(event) => { setQuery(event.target.value); setBanPlaces([]); }}
             />
             <button className="rounded-lg bg-emerald-950 px-5 text-sm font-semibold text-white hover:bg-emerald-800" type="submit">Rechercher</button>
+            {place && <button type="button" onClick={clearPlace} className="rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700">Effacer</button>}
             {matches.length > 0 && query !== place?.label && (
               <div className="absolute left-0 right-24 top-12 z-20 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
                 {matches.map((item) => (
@@ -467,8 +723,9 @@ export default function ExplorerClient() {
         <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-emerald-800">Transactions immobilières · DGFiP</p>
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Le marché, à l’adresse près.</h1>
-            <p className="mt-2 text-sm text-slate-500">Prix de vente publiés, indicateurs locaux et historique des mutations.</p>
+            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Rechercher une vente immobilière</h1>
+            <p className="mt-2 text-sm text-slate-500">Parcourez les ventes publiées par année, territoire, prix, surface et type de bien.</p>
+            {availableYears.length > 0 && <p className="mt-2 text-xs text-slate-500">Années consultables actuellement : {availableYears.at(-1)}–{availableYears[0]} ({availableYears.length} millésimes). Les archives antérieures ne sont pas encore présentes sur l’hôte public.</p>}
           </div>
           <div className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600">
             <span className={`mr-2 inline-block h-2 w-2 rounded-full ${loadState === "ready" ? "bg-emerald-500" : "bg-amber-500"}`} />
@@ -486,9 +743,9 @@ export default function ExplorerClient() {
         <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Indicateurs nationaux">
           {[
             ["Transactions", number(national?.transaction_count), "sur la période publiée"],
-            ["Prix médian", euro(national?.median_price), "tous biens confondus"],
-            ["Prix médian au m²", euro(national?.median_price_per_m2), "biens bâtis renseignés"],
-            ["Surface médiane", national?.median_surface ? `${number(national.median_surface)} m²` : "—", "surface bâtie"],
+            ["Prix médian", euro(national?.median_price), year === "all" ? "choisissez une année" : "biens confondus"],
+            ["Prix médian au m²", euro(national?.median_price_per_m2), year === "all" ? "choisissez une année" : "biens bâtis renseignés"],
+            ["Surface médiane", national?.median_surface ? `${number(national.median_surface)} m²` : "—", year === "all" ? "choisissez une année" : "surface bâtie"],
           ].map(([label, value, note]) => (
             <article key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-900/[0.02]">
               <p className="text-sm text-slate-500">{label}</p>
@@ -505,7 +762,7 @@ export default function ExplorerClient() {
               <h2 className="mt-1 text-xl font-semibold">{placeLabel}</h2>
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-500">Année
-              <select value={year} onChange={(event) => setYear(event.target.value)} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800">
+              <select value={year} onChange={(event) => { setYear(event.target.value); setPage(0); setSales([]); setQueryFiles([]); setQueryPredicate(""); setHasSearched(false); setSelectedSale(null); setResultCount(null); }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800">
                 <option value="all">Toutes</option>{availableYears.map((item) => <option key={item} value={item}>{item}</option>)}
               </select>
             </label>
@@ -518,10 +775,12 @@ export default function ExplorerClient() {
           </div>
 
           {tab === "kpis" ? (
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3"><label className="sr-only" htmlFor="commune-filter">Filtrer les communes</label><input id="commune-filter" value={communeQuery} onChange={(event) => { setCommuneQuery(event.target.value); setCommunePage(0); }} placeholder="Filtrer une commune, un code postal ou INSEE…" className="h-10 min-w-[260px] rounded-md border border-slate-300 bg-white px-3 text-sm"/><p className="text-sm text-slate-500">{number(communeCount)} commune{communeCount === 1 ? "" : "s"}</p><div className="flex items-center gap-2"><label className="text-xs text-slate-500">Lignes<select value={communePageSize} onChange={(event) => { setCommunePageSize(Number(event.target.value)); setCommunePage(0); }} className="ml-1 h-9 rounded-md border border-slate-300 bg-white px-2"><option value={100}>100</option><option value={250}>250</option><option value={500}>500</option></select></label><button disabled={communePage === 0} onClick={() => setCommunePage((value) => Math.max(0, value - 1))} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Précédent</button><span className="text-xs text-slate-500">Page {communePage + 1} / {Math.max(1, Math.ceil(communeCount / communePageSize))}</span><button disabled={(communePage + 1) * communePageSize >= communeCount} onClick={() => setCommunePage((value) => value + 1)} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Suivante</button></div></div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[760px] border-collapse text-left text-sm">
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                  <tr><th className="px-5 py-3 font-medium">Commune</th><th className="px-5 py-3 font-medium">Ventes</th><th className="px-5 py-3 font-medium">Prix médian</th><th className="px-5 py-3 font-medium">€/m² médian</th><th className="px-5 py-3 font-medium">Fourchette €/m²</th><th className="px-5 py-3 font-medium">Surface médiane</th></tr>
+                  <tr>{([{key:"commune", label:"Commune"},{key:"transaction_count",label:"Ventes"},{key:"median_price",label:"Prix médian"},{key:"median_price_per_m2",label:"€/m² médian"},{key:"median_surface",label:"Surface médiane"}] as Array<{key:KpiSort;label:string}>).map(({key,label}) => <th key={key} className="px-5 py-3 font-medium"><button onClick={() => setCommuneSort((current) => ({ column:key, direction:current.column === key && current.direction === "ASC" ? "DESC" : "ASC" }))}>{label}{communeSort.column === key ? (communeSort.direction === "ASC" ? " ↑" : " ↓") : ""}</button></th>)}<th className="px-5 py-3 font-medium">Fourchette €/m²</th><th className="px-5 py-3 font-medium">Explorer</th></tr>
                 </thead>
                 <tbody>
                   {visibleCommunes.map((item) => (
@@ -530,45 +789,52 @@ export default function ExplorerClient() {
                       <td className="px-5 py-3">{number(item.transaction_count)}</td>
                       <td className="px-5 py-3">{euro(item.median_price)}</td>
                       <td className="px-5 py-3">{euro(item.median_price_per_m2)}</td>
-                      <td className="px-5 py-3 text-slate-500">{euro(item.p25_price_per_m2)} – {euro(item.p75_price_per_m2)}</td>
                       <td className="px-5 py-3">{item.median_surface ? `${number(item.median_surface)} m²` : "—"}</td>
+                      <td className="px-5 py-3 text-slate-500">{euro(item.p25_price_per_m2)} – {euro(item.p75_price_per_m2)}</td>
+                      <td className="px-5 py-3"><button onClick={() => { const found = places.find((candidate) => candidate.kind === "commune" && candidate.insee_code === item.insee_code); if (found) { choosePlace(found); setTab("details"); } }} className="font-medium text-emerald-900 underline underline-offset-2">Voir les ventes</button></td>
                     </tr>
                   ))}
-                  {visibleCommunes.length === 0 && <tr><td colSpan={6} className="px-5 py-12 text-center text-slate-500">{loadState === "ready" ? "Aucune commune dans cette sélection." : "Les indicateurs apparaîtront dès que les données seront publiées."}</td></tr>}
+                  {visibleCommunes.length === 0 && <tr><td colSpan={7} className="px-5 py-12 text-center text-slate-500">{loadState === "ready" ? "Aucune commune dans cette sélection." : "Les indicateurs apparaîtront dès que les données seront publiées."}</td></tr>}
                 </tbody>
               </table>
             </div>
+            </div>
           ) : (
             <div className="grid lg:grid-cols-[260px_minmax(0,1fr)]">
-              <form className="space-y-4 border-b border-slate-200 bg-slate-50/70 p-5 lg:border-b-0 lg:border-r" onSubmit={(event) => { event.preventDefault(); setAppliedFilters(filters); setPage(0); void runDetailsQuery(0, filters); }}>
+              <form className="space-y-4 border-b border-slate-200 bg-slate-50/70 p-5 lg:border-b-0 lg:border-r" onSubmit={(event) => { event.preventDefault(); const problem = validateFilters(filters); if (problem) { setDuckError(problem); return; } setDuckError(""); setAppliedFilters(filters); setPage(0); setTab("details"); void runDetailsQuery(0, filters); }}>
+                <label className="block text-xs font-medium text-slate-600">Territoire<select value={place?.department ?? department} onChange={(event) => { clearPlace(); setDepartment(event.target.value); setFilter("department", event.target.value === "all" ? "" : event.target.value); }} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="all">Toute la France</option>{Object.keys(manifest?.departments ?? {}).sort((a, b) => a.localeCompare(b, "fr", { numeric: true })).map((code) => <option key={code} value={code}>Département {code}</option>)}</select></label>
+                <label className="block text-xs font-medium text-slate-600">Code postal exact<input inputMode="numeric" value={filters.postalCode} onChange={(event) => setFilter("postalCode", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" placeholder="Ex. 75011" /></label>
+                <label className="block text-xs font-medium text-slate-600">Numéro ou voie<input value={filters.address} onChange={(event) => setFilter("address", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" placeholder="Ex. 12 rue de la Paix" /></label>
                 <div><label className="mb-1 block text-xs font-medium text-slate-600">Date de mutation · du</label><input type="date" value={filters.from} onChange={(event) => setFilter("from", event.target.value)} className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></div>
                 <div><label className="mb-1 block text-xs font-medium text-slate-600">Au</label><input type="date" value={filters.to} onChange={(event) => setFilter("to", event.target.value)} className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></div>
                 <div className="grid grid-cols-2 gap-2"><label className="text-xs font-medium text-slate-600">Prix min. (€)<input inputMode="decimal" value={filters.minPrice} onChange={(event) => setFilter("minPrice", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label><label className="text-xs font-medium text-slate-600">Prix max. (€)<input inputMode="decimal" value={filters.maxPrice} onChange={(event) => setFilter("maxPrice", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label></div>
-                <label className="block text-xs font-medium text-slate-600">Surface bâtie minimale<input inputMode="decimal" value={filters.minSurface} onChange={(event) => setFilter("minSurface", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+                <div className="grid grid-cols-2 gap-2"><label className="text-xs font-medium text-slate-600">Surface bâtie min. (m²)<input inputMode="decimal" value={filters.minSurface} onChange={(event) => setFilter("minSurface", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label><label className="text-xs font-medium text-slate-600">Max. (m²)<input inputMode="decimal" value={filters.maxSurface} onChange={(event) => setFilter("maxSurface", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label></div>
+                <div className="grid grid-cols-2 gap-2"><label className="text-xs font-medium text-slate-600">Terrain min. (m²)<input inputMode="decimal" value={filters.minLand} onChange={(event) => setFilter("minLand", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label><label className="text-xs font-medium text-slate-600">Max. (m²)<input inputMode="decimal" value={filters.maxLand} onChange={(event) => setFilter("maxLand", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label></div>
                 <label className="block text-xs font-medium text-slate-600">Pièces principales<select value={filters.rooms} onChange={(event) => setFilter("rooms", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="">Toutes</option>{[1, 2, 3, 4, 5, 6].map((count) => <option key={count} value={count}>{count}{count === 6 ? "+" : ""}</option>)}</select></label>
                 <label className="block text-xs font-medium text-slate-600">Type de bien<select value={filters.localType} onChange={(event) => setFilter("localType", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="">Tous</option><option>Maison</option><option>Appartement</option><option>Dépendance</option><option>Local industriel, commercial ou assimilé</option></select></label>
                 <label className="block text-xs font-medium text-slate-600">Nature de mutation<select value={filters.mutation} onChange={(event) => setFilter("mutation", event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"><option value="">Toutes</option><option>Vente</option><option>Vente en l’état futur d’achèvement</option><option>Vente de terrain à bâtir</option><option>Adjudication</option><option>Expropriation</option><option>Échange</option></select></label>
-                <button disabled={!place || querying} className="h-10 w-full rounded-md bg-emerald-950 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300" type="submit">{querying ? "Recherche…" : "Afficher les ventes"}</button>
-                <p className="text-xs leading-5 text-slate-500">Les résultats sont interrogés localement dans votre navigateur.</p>
+                <div className="flex gap-2"><button disabled={querying} className="h-10 flex-1 rounded-md bg-emerald-950 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300" type="submit">{querying ? "Recherche…" : "Afficher les ventes"}</button><button type="button" onClick={() => { setFilters(EMPTY_FILTERS); setAppliedFilters(EMPTY_FILTERS); setPage(0); setResultCount(null); clearPlace(); }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-xs font-medium text-slate-700">Réinitialiser</button></div>
+                <p className="text-xs leading-5 text-slate-500">La recherche nationale peut télécharger plusieurs fichiers Parquet. Choisir un département ou une commune réduit fortement le chargement.</p>
               </form>
               <div className="min-w-0 p-5">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-sm text-slate-600">{sales.length ? `${number(sales.length)} résultat${sales.length > 1 ? "s" : ""} sur la page` : "Sélectionnez une commune puis lancez la recherche."}</p>
-                  <div className="flex gap-2"><button onClick={exportCsv} disabled={!sales.length} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Exporter CSV</button><button disabled={!place || querying || sales.length < 50} onClick={() => void runDetailsQuery(page + 1, appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Page suivante →</button></div>
+                  <p className="text-sm text-slate-600">{resultCount !== null ? `${number(resultCount)} vente${resultCount > 1 ? "s" : ""} · ${resultCount ? `${number(page * pageSize + 1)}–${number(Math.min((page + 1) * pageSize, resultCount))}` : "aucun résultat"}` : "Choisissez un territoire ou lancez une recherche nationale."}</p>
+                  <div className="flex flex-wrap items-center gap-2"><div className="flex rounded-md border border-slate-200 bg-white p-1" aria-label="Affichage des résultats">{([['list','Liste'],['split','Côte à côte'],['map','Carte']] as Array<[ResultsView,string]>).map(([value,label]) => <button key={value} type="button" aria-pressed={resultsView === value} onClick={() => setResultsView(value)} className={`rounded px-2 py-1 text-xs ${resultsView === value ? "bg-emerald-950 text-white" : "text-slate-600"}`}>{label}</button>)}</div><label className="text-xs text-slate-500">Lignes<select value={pageSize} onChange={(event) => { const size = Number(event.target.value); setPageSize(size); setPage(0); void runDetailsQuery(0, appliedFilters, sort, size); }} className="ml-1 h-9 rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-800"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label><button onClick={() => void exportCsv()} disabled={!sales.length || querying} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Exporter tous les résultats CSV</button><button disabled={querying || page === 0} onClick={() => void runDetailsQuery(0, appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">« Première</button><button disabled={querying || page === 0} onClick={() => void runDetailsQuery(page - 1, appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">‹ Précédente</button><button disabled={querying || resultCount === null || (page + 1) * pageSize >= resultCount} onClick={() => void runDetailsQuery(page + 1, appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Suivante ›</button><button disabled={querying || resultCount === null || (page + 1) * pageSize >= resultCount} onClick={() => void runDetailsQuery(Math.max(0, Math.ceil((resultCount ?? 0) / pageSize) - 1), appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Dernière »</button></div>
                 </div>
                 {duckError && <p role="alert" className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800">{duckError}</p>}
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="w-full min-w-[850px] text-left text-sm">
-                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-3 font-medium">Date</th><th className="px-3 py-3 font-medium">Mutation</th><th className="px-3 py-3 font-medium">Bien</th><th className="px-3 py-3 font-medium">Prix</th><th className="px-3 py-3 font-medium">Surface</th><th className="px-3 py-3 font-medium">Statut</th></tr></thead>
-                    <tbody>{sales.map((sale, index) => <tr key={`${sale.mutation_key ?? "sale"}-${index}`} onClick={() => setSelectedSale(sale)} className={`cursor-pointer border-t border-slate-100 ${selectedSale === sale ? "bg-emerald-50" : "hover:bg-slate-50"}`}><td className="px-3 py-3">{String(sale.date_mutation ?? "—")}</td><td className="px-3 py-3">{String(sale.nature_mutation ?? "—")}</td><td className="px-3 py-3">{String(sale.type_local ?? "—")}{sale.nombre_pieces_principales ? ` · ${sale.nombre_pieces_principales} p.` : ""}</td><td className="px-3 py-3 font-medium">{euro(sale.valeur_fonciere)}</td><td className="px-3 py-3">{sale.surface_reelle_bati ? `${number(sale.surface_reelle_bati)} m²` : "—"}</td><td className="px-3 py-3"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{String(sale.flag ?? sale.status ?? "publiée")}</span></td></tr>)}
-                      {!sales.length && <tr><td colSpan={6} className="px-3 py-12 text-center text-slate-500">Aucune transaction affichée.</td></tr>}</tbody>
+                {Object.entries(appliedFilters).filter(([key, value]) => Boolean(value) && key !== "department").length > 0 && <div className="mb-3 flex flex-wrap gap-2" aria-label="Filtres actifs">{Object.entries(appliedFilters).filter(([key, value]) => Boolean(value) && key !== "department").map(([key, value]) => <button key={key} onClick={() => { const next = { ...appliedFilters, [key]: "" }; setAppliedFilters(next); setFilters((current) => ({ ...current, [key]: "" })); setPage(0); void runDetailsQuery(0, next); }} className="rounded-full border border-emerald-900/20 bg-emerald-50 px-3 py-1 text-xs text-emerald-950">{key}: {value} ×</button>)}</div>}
+                {resultsView !== "map" && <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="w-full min-w-[1400px] text-left text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr>{SORT_COLUMNS.map(({ key, label }) => <th key={key} aria-sort={sort.column === key ? (sort.direction === "ASC" ? "ascending" : "descending") : "none"} className="px-3 py-3 font-medium"><button className="whitespace-nowrap" onClick={() => { const nextSort = { column: key, direction: sort.column === key && sort.direction === "ASC" ? "DESC" : "ASC" } as const; setSort(nextSort); setPage(0); void runDetailsQuery(0, appliedFilters, nextSort); }}>{label}{sort.column === key ? (sort.direction === "ASC" ? " ↑" : " ↓") : ""}</button></th>)}<th className="px-3 py-3 font-medium">Statut</th></tr></thead>
+                    <tbody>{sales.map((sale, index) => <tr key={`${sale.mutation_key ?? "sale"}-${index}`} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedSale(sale); } }} onClick={() => setSelectedSale(sale)} className={`cursor-pointer border-t border-slate-100 ${selectedSale === sale ? "bg-emerald-50" : "hover:bg-slate-50"}`}><td className="px-3 py-3">{String(sale.date_mutation ?? "—")}</td><td className="px-3 py-3">{String(sale.commune ?? "—")}</td><td className="px-3 py-3">{String(sale.nature_mutation ?? "—")}</td><td className="px-3 py-3">{String(sale.type_local ?? "—")}</td><td className="px-3 py-3">{String(sale.nombre_pieces_principales ?? "—")}</td><td className="px-3 py-3">{sale.surface_reelle_bati ? `${number(sale.surface_reelle_bati)} m²` : "—"}</td><td className="px-3 py-3">{sale.surface_terrain ? `${number(sale.surface_terrain)} m²` : "—"}</td><td className="px-3 py-3">{euro(sale.price_per_m2)}</td><td className="px-3 py-3 font-medium">{euro(sale.valeur_fonciere)}</td><td className="px-3 py-3"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{String(sale.flag ?? sale.status ?? "publiée")}</span></td></tr>)}
+                      {!sales.length && <tr><td colSpan={10} className="px-3 py-12 text-center text-slate-500">Aucune transaction ne correspond aux filtres.</td></tr>}</tbody>
                   </table>
-                </div>
-                <div className="mt-5">
+                </div>}
+                {resultsView !== "list" && <div className="mt-5">
                   <div className="mb-2 flex items-end justify-between gap-3"><div><h3 className="font-semibold">Carte des mutations</h3><p className="mt-1 text-xs text-slate-500">Points géolocalisés et regroupés à mesure du zoom.</p></div><span className="text-xs text-slate-400">Fond © OpenStreetMap</span></div>
-                  <TransactionMap sales={sales} center={mapCenter} onSelect={selectSale} />
-                </div>
-                {selectedSale && <article className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4"><p className="text-xs font-semibold uppercase tracking-wider text-emerald-900">Mutation sélectionnée</p><div className="mt-2 flex flex-wrap gap-x-8 gap-y-2 text-sm"><span>{String(selectedSale.date_mutation ?? "—")}</span><span>{euro(selectedSale.valeur_fonciere)}</span><span>{String(selectedSale.type_local ?? "Bien non précisé")}</span><span>{selectedSale.surface_reelle_bati ? `${number(selectedSale.surface_reelle_bati)} m²` : "Surface non précisée"}</span></div><p className="mt-2 text-xs text-slate-600">Les lignes d’une même mutation peuvent décrire plusieurs biens ou parcelles.</p></article>}
+                  {sales.some((sale) => sale.latitude != null && sale.longitude != null && Number.isFinite(Number(sale.latitude)) && Number.isFinite(Number(sale.longitude))) ? <TransactionMap sales={sales} center={mapCenter} onSelect={selectSale} /> : <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-5 text-center"><p className="max-w-lg text-sm text-slate-600">Les fichiers DVF disponibles ne fournissent pas ici de coordonnées de vente. La carte affichera des transactions seulement si une géolocalisation vérifiable est publiée pour celles-ci.</p></div>}
+                </div>}
+                {selectedSale && <article className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-emerald-900">Détail de la ligne DVF</p><h3 className="mt-1 text-lg font-semibold">{String(selectedSale.commune ?? "Commune non précisée")} · {String(selectedSale.date_mutation ?? "Date non précisée")}</h3></div><button onClick={() => { const url = new URL(window.location.href); url.searchParams.set("sale", String(selectedSale.mutation_key ?? "")); void navigator.clipboard?.writeText(url.toString()); }} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium">Copier le lien</button></div><dl className="mt-4 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">{([["Valeur foncière", euro(selectedSale.valeur_fonciere)], ["Nature", selectedSale.nature_mutation], ["Type de local", selectedSale.type_local], ["Pièces principales", selectedSale.nombre_pieces_principales], ["Surface bâtie", selectedSale.surface_reelle_bati ? `${number(selectedSale.surface_reelle_bati)} m²` : "—"], ["Surface terrain", selectedSale.surface_terrain ? `${number(selectedSale.surface_terrain)} m²` : "—"], ["Adresse publiée", [selectedSale.no_voie, selectedSale.btq, selectedSale.type_voie, selectedSale.voie].filter(Boolean).join(" ") || "Non renseignée"], ["Code postal / INSEE", `${String(selectedSale.code_postal ?? "—")} / ${String(selectedSale.insee_code ?? "—")}`], ["Parcelle", [selectedSale.prefixe_section, selectedSale.section, selectedSale.no_plan].filter(Boolean).join(" ") || "Non renseignée"]] as Array<[string, unknown]>).map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-0.5 font-medium">{String(value ?? "—")}</dd></div>)}</dl><p className="mt-3 text-xs text-slate-600">Une mutation peut apparaître sur plusieurs lignes lorsqu’elle porte sur plusieurs biens ou parcelles. Cette fiche décrit la ligne source sélectionnée.</p></article>}
               </div>
             </div>
           )}

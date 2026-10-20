@@ -2,11 +2,13 @@
 
 ## Goal
 
-Preserve successive DGFiP DVF snapshots, track transaction-row changes, and
-provide geographic summaries and transaction details through two browser
-explorers. Keep source data and generated datasets outside the public code
-repository. The public Site serves downloadable data from a separate host with
-explicit attribution and crawler restrictions.
+DVF Explorer est un outil public pour retrouver et consulter facilement les
+ventes immobilières publiées dans les données DVF. Il doit couvrir les années
+disponibles, y compris les archives historiques sauvegardées localement,
+permettre de rechercher, filtrer et trier les ventes, d’examiner le détail
+d’une transaction et de télécharger les données publiques. Le projet conserve
+les publications successives, automatise l’intégration des futures publications
+et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
 
 ## Delivery order
 
@@ -53,6 +55,35 @@ explicit attribution and crawler restrictions.
 - **009 — Repository-size alert:** warn before code repository growth becomes
   operationally unsafe.
 - **010 — Scheduled-job monitoring:** surface refresh failures and stale runs.
+
+### Sale explorer usability backlog
+
+- **UI-001 — Result semantics and detail:** define a result as a source row and
+  clearly explain when one mutation spans multiple properties or parcels.
+- **UI-002 — National search:** search every published department without
+  requiring a commune first; default to the latest available year and support
+  department, postal code, commune, and year scopes.
+- **UI-003 — Filters:** add date bounds, price and surface ranges, rooms, local
+  type, mutation nature, and removable active filters with input validation.
+- **UI-004 — Results controls:** exact result count, sortable columns, stable
+  ordering, selectable page size, and first/previous/next/last navigation.
+- **UI-005 — Shareable state:** encode territory, year, filters, sort, page, and
+  selected sale in the URL; restore the view on reload and browser navigation.
+- **UI-006 — Detail and export:** show available source fields and export all
+  filtered results, with a clear notice when an export is large.
+- **UI-007 — Map and geography:** synchronize list and map selection; publish
+  only defensible geographic matches and show when rows have no coordinates.
+- **UI-008 — Indicator explorer:** search, sort, paginate, and open commune
+  sales from the commune indicators.
+- **UI-009 — Mobile and keyboard:** ensure filter panels, result tables,
+  suggestions, and sale details remain usable on narrow screens and by keyboard.
+
+The source data currently present on the separate data host covers 2021–2026.
+Historical local publications from 2014 onward still need to be located and
+imported before that part of the goal is complete. The sale table currently
+queries published Parquet files in the browser; nationwide searches can involve
+many department files, so a more efficient query service or search index may be
+needed as coverage grows.
 
 ## Data handling gates
 
