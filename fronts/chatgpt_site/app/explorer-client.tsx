@@ -573,7 +573,7 @@ export default function ExplorerClient() {
       return;
     }
     try {
-      const url = new URL("https://api-adresse.data.gouv.fr/search/");
+      const url = new URL("https://data.geopf.fr/geocodage/search");
       url.searchParams.set("q", query.trim());
       url.searchParams.set("limit", "5");
       const response = await fetch(url);
