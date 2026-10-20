@@ -29,6 +29,11 @@ never points to files that are still being transferred. It contains:
   downloadable source and department Parquet files;
 - `row_history[]`, listing Parquet files containing additions, modifications,
   or removals between successive source versions.
+- `geography[year]`, with the official geolocated source archive, immutable
+  version, department lookup files, and measured row match coverage; previous
+  versions are retained in `geography_history[year]`.
+- `geography_source`, attributing the companion dataset to Etalab and linking
+  to its [data.gouv.fr page](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees).
 
 ## Files
 
@@ -42,6 +47,10 @@ never points to files that are still being transferred. It contains:
   an unchanged count in the refresh summary.
 - `kpis/<year>.json.gz` and `search/<year>.json.gz`: year-level indicators and
   place search indexes. The browser fetch layer decompresses these gzip bundles.
+- `geography/sources/<year>/version=<n>/<source-name>.csv.gz`: original public
+  DVF geolocation publication, retained byte-for-byte.
+- `geography/<year>/version=<n>/<department>.parquet`: unique parcel and
+  transaction keys with validated coordinates, joined to sales by the browser.
 
 ## Hosting protocol
 
@@ -62,3 +71,10 @@ Byte-identical files are skipped. A changed file is parsed, compared with the
 previous public snapshot, exported under a new version, and added to the
 manifest. The safe `source_files.csv` registry is committed to GitHub; raw data,
 Parquet, and row history are uploaded only to the separate data host.
+
+The same weekly job discovers current DVF geolocation CSV.GZ resources from the
+official companion dataset. It verifies the published checksum and size,
+matches parcel identifiers against the current raw snapshot, reports coverage,
+and uploads immutable source and department indexes. A publication is skipped
+when its resource metadata and public manifest paths are unchanged; the job
+does not need previous exports on its ephemeral runner disk.

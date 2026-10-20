@@ -159,12 +159,27 @@ def _upload_one(site_url: str, relative: str, source: Path, token: str) -> None:
         connection.close()
 
 
-def upload_exports(exports_dir: Path, site_url: str, token: str) -> int:
+def upload_exports(
+    exports_dir: Path,
+    site_url: str,
+    token: str,
+    *,
+    paths: list[str] | None = None,
+) -> int:
     """Stream changed local files; publish manifest last as the commit marker."""
     if not token:
         raise ValueError("DVF_UPLOAD_TOKEN is required to publish data exports")
     root = Path(exports_dir)
-    files = sorted(path for path in root.rglob("*") if path.is_file() and not path.name.endswith(".tmp"))
+    if paths is None:
+        files = sorted(path for path in root.rglob("*") if path.is_file() and not path.name.endswith(".tmp"))
+    else:
+        files = []
+        for relative in paths:
+            safe_path = _safe_relative(relative)
+            candidate = root.joinpath(*PurePosixPath(safe_path).parts)
+            if not candidate.is_file():
+                raise FileNotFoundError(f"Missing export file: {safe_path}")
+            files.append(candidate)
     files.sort(key=lambda path: (path.name == "manifest.json", path.as_posix()))
     for path in files:
         _upload_one(site_url, path.relative_to(root).as_posix(), path, token)

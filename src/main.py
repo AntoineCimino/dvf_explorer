@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,13 @@ from src.data_host import fetch_manifest, restore_snapshot_year, upload_exports
 from src.datagouv import DATASET_API, discover_publications, download_publication
 from src.diff import compare_snapshot_files
 from src.exports import generate_year_exports, publish_raw_source
+from src.geography import (
+    GEOGRAPHY_DATASET_API,
+    GEOGRAPHY_DATASET_URL,
+    build_geography_lookup,
+    discover_geography_publications,
+    download_geography_publication,
+)
 from src.import_archive import collect_sources
 from src.parse import create_view, parse_file
 from src.sources import fingerprint, millesime_from_name, read_registry, register_source
@@ -168,9 +176,27 @@ def _command_sync(args) -> int:
         remote_snapshot = (remote_manifest or {}).get("snapshots", {}).get(str(year), {})
         if known:
             version = int(known["version"])
+            snapshot_dir = args.parquet / f"millesime={year}" / f"version={version}"
+            expected_details = local_snapshot.get("details", {})
+            local_partitions = list(snapshot_dir.glob("dept=*/part-00000.parquet"))
+            local_exports_present = bool(expected_details) and all(
+                (args.exports / relative).is_file()
+                for relative in expected_details.values()
+            )
+            local_exports_present = local_exports_present and all(
+                isinstance(path, str) and (args.exports / path).is_file()
+                for path in (
+                    local_snapshot.get("raw_source"),
+                    local_manifest.get("kpi_files", {}).get(str(year)),
+                    local_manifest.get("search_files", {}).get(str(year)),
+                )
+            )
             local_is_complete = (
                 int(local_snapshot.get("version", -1)) == version
                 and local_snapshot.get("source_sha256") == checksum
+                and bool(expected_details)
+                and len(local_partitions) >= len(expected_details)
+                and local_exports_present
             )
             remote_is_current = (
                 int(remote_snapshot.get("version", -1)) == version
@@ -261,6 +287,129 @@ def _command_restore(args) -> int:
     return 0
 
 
+def _command_sync_geography(args) -> int:
+    publications = discover_geography_publications(args.geo_api)
+    if not publications:
+        raise RuntimeError("The official geolocation dataset API returned no DVF resources")
+    if args.dry_run:
+        for publication in publications:
+            print(f"{publication.period} · {publication.filesize or 'unknown size'} bytes · updated {publication.last_modified or 'unknown'}")
+        return 0
+    if not args.site_url:
+        raise ValueError("--site-url or DVF_SITE_URL is required to publish geography")
+
+    manifest = fetch_manifest(args.site_url, args.exports)
+    if manifest is None:
+        raise RuntimeError("The public data host has no manifest for geography publication")
+    current = manifest.setdefault("geography", {})
+    history = manifest.setdefault("geography_history", {})
+    changed_paths: list[str] = []
+    metadata_changed = False
+
+    with tempfile.TemporaryDirectory(prefix="dvf-geography-source-") as temporary_name:
+        temporary_root = Path(temporary_name)
+        for publication in publications:
+            year_key = str(publication.year)
+            old = current.get(year_key, {})
+            if (
+                old.get("resource_id") == publication.resource_id
+                and old.get("last_modified") == publication.last_modified
+                and old.get("filesize") == publication.filesize
+                and isinstance(old.get("path"), str)
+                and isinstance(old.get("source_path"), str)
+                and isinstance(old.get("details"), dict)
+                and old.get("details")
+            ):
+                print(f"Unchanged geography: {publication.period}")
+                continue
+
+            source = temporary_root / publication.name
+            checksum, _ = download_geography_publication(publication, source)
+            if checksum == old.get("source_sha256"):
+                updated = {
+                    **old,
+                    "period": publication.period,
+                    "resource_id": publication.resource_id,
+                    "title": publication.title,
+                    "source_url": publication.url,
+                    "last_modified": publication.last_modified,
+                    "filesize": publication.filesize,
+                }
+                if updated != old:
+                    current[year_key] = updated
+                    metadata_changed = True
+                print(f"Geography bytes unchanged: {publication.period}")
+                continue
+
+            version = int(old.get("version", 0)) + 1
+            source_relative = f"geography/sources/{year_key}/version={version}/{publication.name}"
+            lookup_root_relative = f"geography/{year_key}/version={version}"
+            source_target = Path(args.exports) / source_relative
+            source_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, source_target)
+            coverage = build_geography_lookup(
+                source,
+                Path(args.exports) / lookup_root_relative,
+                args.parquet,
+                year=publication.year,
+            )
+            details = {
+                department: f"{lookup_root_relative}/{relative}"
+                for department, relative in coverage.pop("details").items()
+            }
+            entry = {
+                "version": version,
+                "period": publication.period,
+                "resource_id": publication.resource_id,
+                "title": publication.title,
+                "source_name": publication.name,
+                "source_url": publication.url,
+                "source_sha256": checksum,
+                "source_path": source_relative,
+                "last_modified": publication.last_modified,
+                "filesize": publication.filesize,
+                "path": f"{lookup_root_relative}/",
+                "details": details,
+                "coverage": coverage,
+            }
+            year_history = history.setdefault(year_key, [])
+            if old and not any(int(item.get("version", -1)) == int(old.get("version", -2)) for item in year_history):
+                year_history.append(old)
+            year_history.append(entry)
+            current[year_key] = entry
+            changed_paths.append(source_relative)
+            changed_paths.extend(details.values())
+            metadata_changed = True
+            rate = 100 * coverage["coverage_rate"]
+            print(
+                f"Published geography {publication.period} v{version}: "
+                f"{coverage['rows_with_coordinates']:,}/{coverage['total_rows']:,} rows matched ({rate:.1f}%)."
+            )
+
+    if not metadata_changed:
+        print("No geolocation resource changed; no exports were uploaded.")
+        return 0
+
+    manifest["geography_source"] = {
+        "name": "DVF géolocalisées (Etalab à partir des données DVF de la DGFiP)",
+        "url": GEOGRAPHY_DATASET_URL,
+        "license": "Licence Ouverte 2.0",
+    }
+    manifest["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest_path = Path(args.exports) / "manifest.json"
+    temporary_manifest = manifest_path.with_suffix(".json.tmp")
+    temporary_manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary_manifest.replace(manifest_path)
+    uploaded = upload_exports(
+        args.exports,
+        args.site_url,
+        os.environ.get("DVF_UPLOAD_TOKEN", ""),
+        paths=[*changed_paths, "manifest.json"],
+    )
+    print(f"Uploaded {uploaded} geolocation objects and the updated manifest.")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="dvf-explorer")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -304,6 +453,14 @@ def main(argv=None):
     restore.add_argument("--exports", type=Path, default=Path("exports"))
     restore.add_argument("--parquet", type=Path, default=Path("parquet"))
     restore.set_defaults(func=_command_restore)
+
+    geography = commands.add_parser("sync-geography", help="publish current official DVF parcel locations")
+    geography.add_argument("--geo-api", default=GEOGRAPHY_DATASET_API)
+    geography.add_argument("--site-url", default=os.environ.get("DVF_SITE_URL", ""))
+    geography.add_argument("--exports", type=Path, default=Path("exports"))
+    geography.add_argument("--parquet", type=Path, default=Path("parquet"))
+    geography.add_argument("--dry-run", action="store_true")
+    geography.set_defaults(func=_command_sync_geography)
 
     parse = commands.add_parser("parse", help="parse one source file into Parquet")
     parse.add_argument("source", type=Path)

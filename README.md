@@ -9,15 +9,18 @@ this code repository.
 
 ## Source and reuse
 
-The source data is **DGFiP — Demandes de valeurs foncières (DVF)**, published
-under [Licence Ouverte 2.0](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres).
+The transaction source is **DGFiP — Demandes de valeurs foncières (DVF)**,
+published under [Licence Ouverte 2.0](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres).
+Parcel coordinates come from Etalab's complementary [DVF géolocalisées dataset](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees),
+also under Licence Ouverte 2.0. The site reports the share of transaction rows
+matched to valid parcel coordinates and keeps unmatched rows available.
 The MIT license in this repository applies to the code, not to DVF data.
 
 Reuse of DVF data must follow the [source dataset's conditions](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres)
 and [article R*112 A-3 of the Livre des procédures fiscales](https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000038001715/):
 processing must not enable re-identification of people, and DVF information
-must not be indexed by online search engines. The planned public interfaces
-will include `robots.txt` and `<meta name="robots" content="noindex, nofollow">`.
+must not be indexed by online search engines. The public interfaces include
+`robots.txt`, no-index page metadata, and `X-Robots-Tag` headers on data routes.
 The public Site and downloads attribute the source to DGFiP and link to the
 [data.gouv.fr dataset](https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres).
 The Site keeps its data routes out of search indexes and offers source,

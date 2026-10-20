@@ -34,6 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m src.main sync --site-url "$DVF_SITE_URL" | tee /tmp/dvf-refresh-summary.txt
+          python -m src.main sync-geography --site-url "$DVF_SITE_URL" | tee -a /tmp/dvf-refresh-summary.txt
           cat /tmp/dvf-refresh-summary.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Commit safe source metadata
         shell: bash

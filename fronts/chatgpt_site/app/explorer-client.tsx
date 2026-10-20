@@ -44,6 +44,17 @@ type Manifest = {
   search_files?: Record<string, string>;
   snapshots?: Record<string, { version: number; raw_source?: string; details: Record<string, string> }>;
   snapshot_history?: Record<string, Array<{ version: number; raw_source?: string; details: Record<string, string> }>>;
+  geography?: Record<string, {
+    version: number;
+    period: string;
+    source_name: string;
+    source_path: string;
+    source_url: string;
+    details: Record<string, string>;
+    coverage: { total_rows: number; rows_with_parcel: number; rows_with_coordinates: number; coverage_rate: number };
+  }>;
+  geography_history?: Record<string, Array<{ version: number; source_path: string; details: Record<string, string> }>>;
+  geography_source?: { name: string; url: string; license: string };
   row_history?: string[];
 };
 
@@ -261,6 +272,7 @@ export default function ExplorerClient() {
   const [appliedFilters, setAppliedFilters] = useState<Filters>(EMPTY_FILTERS);
   const [sales, setSales] = useState<Sale[]>([]);
   const [queryFiles, setQueryFiles] = useState<string[]>([]);
+  const [queryGeographyFiles, setQueryGeographyFiles] = useState<string[]>([]);
   const [queryPredicate, setQueryPredicate] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
@@ -355,6 +367,7 @@ export default function ExplorerClient() {
       setPlace(null);
       setSelectedSale(null);
       setQueryFiles([]);
+      setQueryGeographyFiles([]);
       setHasSearched(params.get("searched") === "1");
       restoredQueryRan.current = false;
     };
@@ -480,6 +493,13 @@ export default function ExplorerClient() {
         ? Object.values(details ?? {})
         : [details?.[year]].filter((item): item is string => Boolean(item));
     });
+    const selectedYears = year === "all" ? Object.keys(manifest.snapshots ?? {}) : [year];
+    const geographySources = [...new Set(selectedYears.flatMap((sourceYear) =>
+      selectedDepartments.flatMap((code) => {
+        const path = manifest.geography?.[sourceYear]?.details?.[code];
+        return path ? [path] : [];
+      }),
+    ))];
     if (!sources.length) {
       setDuckError("Aucun fichier de détail n’est disponible pour ce département.");
       return;
@@ -494,6 +514,11 @@ export default function ExplorerClient() {
       await Promise.all(sources.map((source, index) => {
         const url = new URL(`/api/data/${source}`, window.location.origin).toString();
         return database.registerFileURL(fileNames[index], url, duckdb.DuckDBDataProtocol.HTTP, false);
+      }));
+      const geographyFileNames = geographySources.map((source, index) => `dvf-geo-${year}-${index}-${source.split("/").at(-1) ?? "data"}`);
+      await Promise.all(geographySources.map((source, index) => {
+        const url = new URL(`/api/data/${source}`, window.location.origin).toString();
+        return database.registerFileURL(geographyFileNames[index], url, duckdb.DuckDBDataProtocol.HTTP, false);
       }));
 
       const conditions: string[] = [];
@@ -522,20 +547,38 @@ export default function ExplorerClient() {
       if (nextFilters.mutation) conditions.push(`nature_mutation = '${quoteSql(nextFilters.mutation)}'`);
 
       const parquetFiles = `[${fileNames.map((name) => `'${quoteSql(name)}'`).join(",")}]`;
+      const geographyParquetFiles = `[${geographyFileNames.map((name) => `'${quoteSql(name)}'`).join(",")}]`;
       const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
       setQueryFiles(fileNames);
+      setQueryGeographyFiles(geographyFileNames);
       setQueryPredicate(where);
       const orderColumn = nextSort.column === "price_per_m2"
         ? "valeur_fonciere / NULLIF(surface_reelle_bati, 0)"
         : nextSort.column;
-      const sql = `SELECT date_mutation, nature_mutation, valeur_fonciere, commune,
+      const salesSource = `read_parquet(${parquetFiles}, union_by_name=true)`;
+      const geographyCte = geographyFileNames.length
+        ? `WITH resolved_sales AS (
+            SELECT sale.* EXCLUDE (latitude, longitude),
+              coalesce(geo.latitude, sale.latitude) AS latitude,
+              coalesce(geo.longitude, sale.longitude) AS longitude
+            FROM ${salesSource} AS sale
+            LEFT JOIN read_parquet(${geographyParquetFiles}, union_by_name=true) AS geo
+              ON sale.date_mutation = geo.date_mutation
+              AND lpad(sale.no_disposition, 6, '0') = geo.no_disposition
+              AND lpad(sale.code_departement, 3, '0') = lpad(geo.department, 3, '0')
+              AND sale.insee_code || lpad(coalesce(nullif(sale.prefixe_section, ''), '0'), 3, '0')
+                || lpad(coalesce(sale.section, ''), 2, '0') || lpad(coalesce(sale.no_plan, ''), 4, '0') = geo.parcel_key
+          )`
+        : `WITH resolved_sales AS (SELECT * FROM ${salesSource})`;
+      const sql = `${geographyCte}
+        SELECT date_mutation, nature_mutation, valeur_fonciere, commune,
           code_departement, code_postal, insee_code, no_voie, btq, type_voie, voie,
           prefixe_section, section, no_plan, no_disposition, type_local, surface_reelle_bati,
           surface_terrain, nombre_pieces_principales,
           valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2,
           mutation_key, status, flag, latitude, longitude,
           count(*) OVER() AS _total
-        FROM read_parquet(${parquetFiles}, union_by_name=true) ${where}
+        FROM resolved_sales ${where}
         ORDER BY ${orderColumn} ${nextSort.direction} NULLS LAST, mutation_key ASC
         LIMIT ${nextPageSize + 1} OFFSET ${nextPage * nextPageSize}`;
       try {
@@ -607,6 +650,7 @@ export default function ExplorerClient() {
     setTab("kpis");
     setSales([]);
     setQueryFiles([]);
+    setQueryGeographyFiles([]);
     setQueryPredicate("");
     setHasSearched(false);
     setSelectedSale(null);
@@ -624,6 +668,7 @@ export default function ExplorerClient() {
     setDepartment("all");
     setSales([]);
     setQueryFiles([]);
+    setQueryGeographyFiles([]);
     setQueryPredicate("");
     setHasSearched(false);
     setSelectedSale(null);
@@ -643,8 +688,24 @@ export default function ExplorerClient() {
       const connection = await database.connect();
       try {
         const parquetFiles = `[${queryFiles.map((name) => `'${quoteSql(name)}'`).join(",")}]`;
+        const geographyParquetFiles = `[${queryGeographyFiles.map((name) => `'${quoteSql(name)}'`).join(",")}]`;
+        const salesSource = `read_parquet(${parquetFiles}, union_by_name=true)`;
+        const geographyCte = queryGeographyFiles.length
+          ? `WITH resolved_sales AS (
+              SELECT sale.* EXCLUDE (latitude, longitude),
+                coalesce(geo.latitude, sale.latitude) AS latitude,
+                coalesce(geo.longitude, sale.longitude) AS longitude
+              FROM ${salesSource} AS sale
+              LEFT JOIN read_parquet(${geographyParquetFiles}, union_by_name=true) AS geo
+                ON sale.date_mutation = geo.date_mutation
+                AND lpad(sale.no_disposition, 6, '0') = geo.no_disposition
+                AND lpad(sale.code_departement, 3, '0') = lpad(geo.department, 3, '0')
+                AND sale.insee_code || lpad(coalesce(nullif(sale.prefixe_section, ''), '0'), 3, '0')
+                  || lpad(coalesce(sale.section, ''), 2, '0') || lpad(coalesce(sale.no_plan, ''), 4, '0') = geo.parcel_key
+            )`
+          : `WITH resolved_sales AS (SELECT * FROM ${salesSource})`;
         const exportOrder = sort.column === "price_per_m2" ? "valeur_fonciere / NULLIF(surface_reelle_bati, 0)" : sort.column;
-        const result = await connection.query(`SELECT *, valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2 FROM read_parquet(${parquetFiles}, union_by_name=true) ${queryPredicate} ORDER BY ${exportOrder} ${sort.direction} NULLS LAST, mutation_key ASC`);
+        const result = await connection.query(`${geographyCte} SELECT *, valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2 FROM resolved_sales ${queryPredicate} ORDER BY ${exportOrder} ${sort.direction} NULLS LAST, mutation_key ASC`);
         const records = result.toArray().map((item) => item.toJSON() as Sale);
         if (!records.length) return;
         const columns = Object.keys(records[0]).filter((column) => !column.startsWith("_"));
@@ -672,6 +733,14 @@ export default function ExplorerClient() {
   const mapCenter: [number, number] | undefined = place?.latitude !== undefined && place.longitude !== undefined
     ? [place.latitude, place.longitude]
     : undefined;
+  const geographyCoverage = useMemo(() => {
+    const entries = year === "all"
+      ? Object.values(manifest?.geography ?? {})
+      : manifest?.geography?.[year] ? [manifest.geography[year]] : [];
+    const total = entries.reduce((sum, entry) => sum + entry.coverage.total_rows, 0);
+    const matched = entries.reduce((sum, entry) => sum + entry.coverage.rows_with_coordinates, 0);
+    return total ? { total, matched, rate: matched / total } : null;
+  }, [manifest, year]);
 
   const placeLabel = place?.label ?? "Toute la France";
 
@@ -762,7 +831,7 @@ export default function ExplorerClient() {
               <h2 className="mt-1 text-xl font-semibold">{placeLabel}</h2>
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-500">Année
-              <select value={year} onChange={(event) => { setYear(event.target.value); setPage(0); setSales([]); setQueryFiles([]); setQueryPredicate(""); setHasSearched(false); setSelectedSale(null); setResultCount(null); }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800">
+              <select value={year} onChange={(event) => { setYear(event.target.value); setPage(0); setSales([]); setQueryFiles([]); setQueryGeographyFiles([]); setQueryPredicate(""); setHasSearched(false); setSelectedSale(null); setResultCount(null); }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800">
                 <option value="all">Toutes</option>{availableYears.map((item) => <option key={item} value={item}>{item}</option>)}
               </select>
             </label>
@@ -833,7 +902,8 @@ export default function ExplorerClient() {
                 </div>}
                 {resultsView !== "list" && <div className="mt-5">
                   <div className="mb-2 flex items-end justify-between gap-3"><div><h3 className="font-semibold">Carte des mutations</h3><p className="mt-1 text-xs text-slate-500">Points géolocalisés et regroupés à mesure du zoom.</p></div><span className="text-xs text-slate-400">Fond © OpenStreetMap</span></div>
-                  {sales.some((sale) => sale.latitude != null && sale.longitude != null && Number.isFinite(Number(sale.latitude)) && Number.isFinite(Number(sale.longitude))) ? <TransactionMap sales={sales} center={mapCenter} onSelect={selectSale} /> : <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-5 text-center"><p className="max-w-lg text-sm text-slate-600">Les fichiers DVF disponibles ne fournissent pas ici de coordonnées de vente. La carte affichera des transactions seulement si une géolocalisation vérifiable est publiée pour celles-ci.</p></div>}
+                  {sales.some((sale) => sale.latitude != null && sale.longitude != null && Number.isFinite(Number(sale.latitude)) && Number.isFinite(Number(sale.longitude))) ? <TransactionMap sales={sales} center={mapCenter} onSelect={selectSale} /> : <div className="grid min-h-64 place-items-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-5 text-center"><p className="max-w-lg text-sm text-slate-600">Aucune vente de cette page n’a de coordonnée parcellaire vérifiée. Les autres ventes restent consultables dans la liste.</p></div>}
+                  {geographyCoverage && <p className="mt-2 text-xs text-slate-500">Rapprochement parcellaire validé : {number(geographyCoverage.matched)} sur {number(geographyCoverage.total)} lignes ({new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 1 }).format(geographyCoverage.rate)}) pour la période choisie. Source : DVF géolocalisées, Etalab.</p>}
                 </div>}
                 {selectedSale && <article className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50/60 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-wider text-emerald-900">Détail de la ligne DVF</p><h3 className="mt-1 text-lg font-semibold">{String(selectedSale.commune ?? "Commune non précisée")} · {String(selectedSale.date_mutation ?? "Date non précisée")}</h3></div><button onClick={() => { const url = new URL(window.location.href); url.searchParams.set("sale", String(selectedSale.mutation_key ?? "")); void navigator.clipboard?.writeText(url.toString()); }} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium">Copier le lien</button></div><dl className="mt-4 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">{([["Valeur foncière", euro(selectedSale.valeur_fonciere)], ["Nature", selectedSale.nature_mutation], ["Type de local", selectedSale.type_local], ["Pièces principales", selectedSale.nombre_pieces_principales], ["Surface bâtie", selectedSale.surface_reelle_bati ? `${number(selectedSale.surface_reelle_bati)} m²` : "—"], ["Surface terrain", selectedSale.surface_terrain ? `${number(selectedSale.surface_terrain)} m²` : "—"], ["Adresse publiée", [selectedSale.no_voie, selectedSale.btq, selectedSale.type_voie, selectedSale.voie].filter(Boolean).join(" ") || "Non renseignée"], ["Code postal / INSEE", `${String(selectedSale.code_postal ?? "—")} / ${String(selectedSale.insee_code ?? "—")}`], ["Parcelle", [selectedSale.prefixe_section, selectedSale.section, selectedSale.no_plan].filter(Boolean).join(" ") || "Non renseignée"]] as Array<[string, unknown]>).map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-0.5 font-medium">{String(value ?? "—")}</dd></div>)}</dl><p className="mt-3 text-xs text-slate-600">Une mutation peut apparaître sur plusieurs lignes lorsqu’elle porte sur plusieurs biens ou parcelles. Cette fiche décrit la ligne source sélectionnée.</p></article>}
               </div>
@@ -848,7 +918,7 @@ export default function ExplorerClient() {
               <p className="mt-1 text-sm text-slate-500">Sources DVF, indicateurs, transactions Parquet et historique des révisions.</p>
             </summary>
             <div className="mt-5 space-y-5">
-              <p className="text-sm leading-6 text-slate-600">Source : <a className="underline" href="https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres" target="_blank" rel="noreferrer">DGFiP — Demandes de valeurs foncières</a> · Licence Ouverte 2.0. Les fichiers téléchargeables restent soumis aux conditions de réutilisation de la source.</p>
+              <p className="text-sm leading-6 text-slate-600">Sources : <a className="underline" href="https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres" target="_blank" rel="noreferrer">DGFiP — Demandes de valeurs foncières</a> et <a className="underline" href={manifest.geography_source?.url ?? "https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees"} target="_blank" rel="noreferrer">Etalab — DVF géolocalisées</a> · Licence Ouverte 2.0. Les coordonnées sont rapprochées à la parcelle et restent absentes quand aucun rapprochement fiable n’est disponible.</p>
               <div className="grid gap-5 md:grid-cols-2">
                 <div>
                   <h3 className="text-sm font-semibold">Indicateurs et index de recherche</h3>
@@ -858,6 +928,15 @@ export default function ExplorerClient() {
                   <h3 className="text-sm font-semibold">Historique des comparaisons</h3>
                   <ul className="mt-2 space-y-1 text-sm">{(manifest.row_history ?? []).map((path) => <li key={path}><a className="text-emerald-900 underline" href={`/api/data/${path}`} download>{path.replace("history/", "Historique ")} (.parquet)</a></li>)}{!(manifest.row_history ?? []).length && <li className="text-slate-500">Aucune révision comparée pour l’instant.</li>}</ul>
                 </div>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold">Géolocalisation des parcelles</h3>
+                <ul className="mt-2 space-y-2 text-sm">{Object.entries(manifest.geography ?? {}).sort(([a], [b]) => Number(b) - Number(a)).map(([sourceYear, geography]) => <li key={`geo-${sourceYear}`} className="rounded-lg border border-slate-200 px-3 py-2">
+                  <p className="font-medium">{geography.period} · {new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 1 }).format(geography.coverage.coverage_rate)} des lignes rapprochées</p>
+                  <p className="mt-1"><a className="text-emerald-900 underline" href={`/api/data/${geography.source_path}`} download>Source géolocalisée (.csv.gz)</a></p>
+                  <details className="mt-1"><summary className="cursor-pointer text-slate-600">Index Parquet par département ({Object.keys(geography.details).length})</summary><ul className="mt-1 grid gap-x-4 sm:grid-cols-3">{Object.entries(geography.details).sort(([a], [b]) => a.localeCompare(b, "fr")).map(([geoDepartment, path]) => <li key={path}><a className="text-emerald-900 underline" href={`/api/data/${path}`} download>Département {geoDepartment}</a></li>)}</ul></details>
+                </li>)}</ul>
+                {!Object.keys(manifest.geography ?? {}).length && <p className="mt-2 text-sm text-slate-500">Aucune géolocalisation parcellaire publiée pour le moment.</p>}
               </div>
               <div>
                 <h3 className="text-sm font-semibold">Publications conservées</h3>
@@ -875,7 +954,7 @@ export default function ExplorerClient() {
         </section>}
 
         <footer className="mt-6 flex flex-wrap justify-between gap-3 text-xs leading-5 text-slate-500">
-          <p>Source : <a className="underline decoration-slate-400 underline-offset-2 hover:text-emerald-900" href="https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres" target="_blank" rel="noreferrer">DGFiP — Demandes de valeurs foncières</a>, Licence Ouverte 2.0.</p>
+          <p>Sources : <a className="underline decoration-slate-400 underline-offset-2 hover:text-emerald-900" href="https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres" target="_blank" rel="noreferrer">DGFiP — Demandes de valeurs foncières</a> · <a className="underline decoration-slate-400 underline-offset-2 hover:text-emerald-900" href="https://www.data.gouv.fr/datasets/demandes-de-valeurs-foncieres-geolocalisees" target="_blank" rel="noreferrer">Etalab — DVF géolocalisées</a>, Licence Ouverte 2.0.</p>
           <p>Traitement local dans le navigateur · Site non indexé · Respect des conditions de réutilisation DVF.</p>
         </footer>
       </div>
