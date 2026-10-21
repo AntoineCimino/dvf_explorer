@@ -2,6 +2,7 @@ version: 1
 jobs:
   - id: dvf-explorer-weekly-sync
     name: DVF weekly data.gouv sync
+    description: "Checks data.gouv.fr every Monday for a new version of the property-sales file (DVF) and updates the database."
     location: github-actions
     where: cloud
     workflow: {repo: AntoineCimino/dvf_explorer, file: weekly_sync.yml}
