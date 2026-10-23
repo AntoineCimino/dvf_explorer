@@ -36,9 +36,9 @@ def build_summary(log_text: str | None, duration_seconds: int) -> tuple[str, str
     )
     alert = None
     if not log_text or not counters["files_downloaded"]:
-        alert = "sync produced no publication report (step failed or log missing)"
+        alert = "No files downloaded: the sync step failed or its log is missing."
     elif counters["rows_removed"]:
-        alert = f"{counters['rows_removed']} rows disappeared from the official source between versions"
+        alert = f"{counters['rows_removed']} rows removed from the official source between versions (kept in the history)."
     return notice, alert
 
 
