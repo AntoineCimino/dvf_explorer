@@ -11,6 +11,7 @@ import shutil
 import tempfile
 
 from src.data_host import fetch_manifest, restore_snapshot_year, upload_exports
+from src.audit import audit_snapshot, write_audit
 from src.datagouv import DATASET_API, discover_publications, download_publication
 from src.diff import compare_snapshot_files
 from src.exports import generate_year_exports, publish_raw_source
@@ -45,6 +46,7 @@ def ingest_file(
     ) + 1
     snapshot_dir = parquet_root / f"millesime={year}" / f"version={version}"
     if existing and snapshot_dir.exists():
+        _audit_ingested_snapshot(source, parquet_root, year, version, checksum)
         return False, version, 0
     if version > 1:
         previous_dir = parquet_root / f"millesime={year}" / f"version={version - 1}"
@@ -54,6 +56,7 @@ def ingest_file(
             )
 
     outputs = parse_file(source, parquet_root, version=version)
+    _audit_ingested_snapshot(source, parquet_root, year, version, checksum)
     event_count = 0
     if version > 1:
         history_file = history_root / f"millesime={year}" / f"versions={version - 1}-{version}" / "row_history.parquet"
@@ -72,6 +75,15 @@ def ingest_file(
         )
     print(f"Processed {year} version {version}; wrote {len(outputs)} department partitions.")
     return True, version, event_count
+
+
+def _audit_ingested_snapshot(source: Path, parquet_root: Path, year: int, version: int, checksum: str) -> None:
+    audit = audit_snapshot(
+        source, parquet_root, year=year, version=version, registry_sha256=checksum,
+    )
+    print(write_audit(audit), end="")
+    if audit["result"] != "pass":
+        raise RuntimeError(f"Independent source-to-Parquet audit failed: {audit['failures']}")
 
 
 def _command_ingest(args) -> int:
@@ -203,6 +215,7 @@ def _command_sync(args) -> int:
                 and remote_snapshot.get("source_sha256") == checksum
             )
             if local_is_complete:
+                _audit_ingested_snapshot(source, args.parquet, year, version, checksum)
                 if remote_is_current:
                     print(f"Unchanged: {publication.name}")
                 else:
@@ -471,6 +484,16 @@ def main(argv=None):
     view.add_argument("--parquet", type=Path, default=Path("parquet"))
     view.set_defaults(func=lambda args: _show_view(args.parquet))
 
+    audit = commands.add_parser("audit", help="independently compare a raw source with its Parquet snapshot")
+    audit.add_argument("source", type=Path)
+    audit.add_argument("--year", type=int, required=True)
+    audit.add_argument("--version", type=int, required=True)
+    audit.add_argument("--registry", type=Path, default=Path("source_files.csv"))
+    audit.add_argument("--parquet", type=Path, default=Path("parquet"))
+    audit.add_argument("--manifest", type=Path, default=Path("exports/manifest.json"))
+    audit.add_argument("--output", type=Path, help="write the JSON report to this path")
+    audit.set_defaults(func=_command_audit)
+
     args = parser.parse_args(argv)
     return args.func(args)
 
@@ -480,6 +503,36 @@ def _show_view(parquet_root: Path) -> int:
     print(connection.execute("SELECT count(*) FROM dvf").fetchone()[0])
     connection.close()
     return 0
+
+
+def _command_audit(args) -> int:
+    registry_match = next((
+        row for row in read_registry(args.registry)
+        if int(row["millesime"]) == args.year and int(row["version"]) == args.version
+    ), None)
+    report = audit_snapshot(
+        args.source, args.parquet, year=args.year, version=args.version,
+        registry_sha256=registry_match["sha256"] if registry_match else None,
+    )
+    manifest_sha256 = None
+    if args.manifest.is_file():
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+        published = manifest.get("snapshot_history", {}).get(str(args.year), [])
+        published += [manifest.get("snapshots", {}).get(str(args.year), {})]
+        manifest_entry = next(
+            (item for item in published if int(item.get("version", -1)) == args.version), None
+        )
+        manifest_sha256 = manifest_entry.get("source_sha256") if manifest_entry else None
+        report["source"]["manifest_sha256"] = manifest_sha256
+        if manifest_entry is None:
+            report["failures"].append("snapshot_missing_from_manifest")
+        elif manifest_entry.get("source_sha256") != report["source"]["sha256"]:
+            report["failures"].append("source_manifest_sha256_mismatch")
+    if registry_match is None and manifest_sha256 is None:
+        report["failures"].append("no_registered_or_published_source_hash")
+    report["result"] = "fail" if report["failures"] else "pass"
+    print(write_audit(report, args.output), end="")
+    return 0 if report["result"] == "pass" else 1
 
 
 if __name__ == "__main__":

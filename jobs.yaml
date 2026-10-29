@@ -2,7 +2,7 @@ version: 1
 jobs:
   - id: dvf-explorer-weekly-sync
     name: DVF weekly data.gouv sync
-    description: "Checks data.gouv.fr every Monday for a new version of the property-sales file (DVF) and updates the database."
+    description: "Checks data.gouv.fr for a new version of the property-sales files (DVF) and records every added, changed or removed row in the history database."
     location: github-actions
     where: cloud
     workflow: {repo: AntoineCimino/dvf_explorer, file: weekly_sync.yml}
@@ -14,8 +14,13 @@ jobs:
     # one week + 12h margin; non-success conclusion = ERROR.
     sanity: {max_age_hours: 180, max_run_hours: 2}
     severity: medium
+    on_alert_hint: "Not urgent: the sync finished. Read the run-alert reason in the run summary; rows removed from the official source are kept in the history, so just note them."
+    on_error_hint: "Open the failed GitHub Actions run log; the next Monday run retries automatically. Do not re-run by hand unless a week of data would be missed."
+    runbook: docs/run_summary.md
+    owner: Repo owner
+    impact: The public fronts keep showing the previous DVF version until the next successful sync.
     counter_labels:
-      new_version: New version
+      new_version: New version published
       files_downloaded: Files downloaded
       rows_added: Rows added
       rows_changed: Rows changed

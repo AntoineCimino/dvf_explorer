@@ -15,5 +15,6 @@ The last step of `.github/workflows/weekly_sync.yml` (`if: always()`) runs
   `Comparison ...` line. History is never deleted; `rows_removed` > 0 means rows vanished from the source.
 - `duration_seconds`: wall time from the start of the sync step to the summary step.
 
-`run-alert` reasons: no publication report (sync failed or log missing), or `rows_removed` > 0.
+`run-alert` reasons (wording mirrors the `counter_labels` in `jobs.yaml`): "No files downloaded ..."
+(sync failed or log missing), or "N rows removed from the official source ..." (`rows_removed` > 0).
 Keys are stable; new keys may be appended. The step always exits 0.

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import {
   type FormEvent,
   useRef,
@@ -30,6 +32,7 @@ type Place = {
   department: string;
   code_postal?: string;
   section?: string;
+  address?: string;
   latitude?: number;
   longitude?: number;
 };
@@ -42,7 +45,7 @@ type Manifest = {
   departments: Record<string, { details: string | Record<string, string>; sections?: string }>;
   kpi_files?: Record<string, string>;
   search_files?: Record<string, string>;
-  snapshots?: Record<string, { version: number; raw_source?: string; details: Record<string, string> }>;
+  snapshots?: Record<string, { version: number; source_name?: string; raw_source?: string; details: Record<string, string> }>;
   snapshot_history?: Record<string, Array<{ version: number; raw_source?: string; details: Record<string, string> }>>;
   geography?: Record<string, {
     version: number;
@@ -67,7 +70,7 @@ type ExportData = {
 type Sale = Record<string, unknown>;
 type Tab = "kpis" | "details";
 type ResultsView = "split" | "list" | "map";
-type KpiSort = "commune" | "transaction_count" | "median_price" | "median_price_per_m2" | "median_surface";
+type KpiSort = "commune" | "year" | "transaction_count" | "median_price" | "median_price_per_m2" | "median_surface";
 type Filters = {
   from: string;
   to: string;
@@ -147,6 +150,7 @@ const SALE_SURFACE_FIELDS = new Set<string>([
   "surface_reelle_bati", "surface_terrain",
   "carrez_1", "carrez_2", "carrez_3", "carrez_4", "carrez_5",
 ]);
+const SOURCE_ROW_KEY_SQL = `sha256(to_json(struct_pack(${SALE_FIELD_LABELS.map(([key]) => `${key} := ${key}`).join(", ")})))`;
 
 let databasePromise: Promise<import("@duckdb/duckdb-wasm").AsyncDuckDB> | null = null;
 
@@ -179,6 +183,13 @@ async function getDatabase() {
 function number(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(value);
+}
+
+function publishedPeriod(manifest: Manifest | null, year: number) {
+  const snapshot = manifest?.snapshots?.[String(year)];
+  const sourceName = `${snapshot?.source_name ?? ""} ${snapshot?.raw_source ?? ""}`;
+  const semester = sourceName.match(/(?:^|[-_])(S[12])(?:[-_.]|$)/i)?.[1]?.toUpperCase();
+  return semester ? `${year} ${semester}` : String(year);
 }
 
 function euro(value: unknown) {
@@ -314,7 +325,9 @@ export default function ExplorerClient() {
   const [loadMessage, setLoadMessage] = useState("");
   const [query, setQuery] = useState("");
   const [place, setPlace] = useState<Place | null>(null);
-  const [year, setYear] = useState("all");
+  const [placeRestoreMessage, setPlaceRestoreMessage] = useState("");
+  const [placeRestorePending, setPlaceRestorePending] = useState(false);
+  const [year, setYear] = useState("");
   const [department, setDepartment] = useState("all");
   const [tab, setTab] = useState<Tab>("kpis");
   const [resultsView, setResultsView] = useState<ResultsView>("split");
@@ -326,6 +339,7 @@ export default function ExplorerClient() {
   const [queryPredicate, setQueryPredicate] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
+  const [saleRestoreMessage, setSaleRestoreMessage] = useState("");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
   const [communeQuery, setCommuneQuery] = useState("");
@@ -338,9 +352,11 @@ export default function ExplorerClient() {
   const [duckError, setDuckError] = useState("");
   const [banPlaces, setBanPlaces] = useState<Place[]>([]);
   const [urlHydrated, setUrlHydrated] = useState(false);
+  const [navigationRevision, setNavigationRevision] = useState(0);
   const popNavigationRef = useRef(false);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
     const params = new URLSearchParams(window.location.search);
     const nextFilters = { ...EMPTY_FILTERS };
     for (const key of Object.keys(EMPTY_FILTERS) as Array<keyof Filters>) {
@@ -348,6 +364,7 @@ export default function ExplorerClient() {
     }
     const requestedYear = params.get("year");
     if (requestedYear) setYear(requestedYear);
+    setPlaceRestorePending(Boolean(params.get("place")));
     const requestedDepartment = params.get("department");
     if (requestedDepartment) setDepartment(requestedDepartment);
     const requestedTab = params.get("tab");
@@ -366,10 +383,12 @@ export default function ExplorerClient() {
     setFilters(nextFilters);
     setAppliedFilters(nextFilters);
     setUrlHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
-    if (!urlHydrated) return;
+    if (!urlHydrated || !manifest || !year) return;
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(appliedFilters)) if (value) params.set(key, value);
     params.set("year", year);
@@ -382,9 +401,20 @@ export default function ExplorerClient() {
     params.set("dir", sort.direction);
     params.set("searched", hasSearched ? "1" : "0");
     const currentUrl = new URLSearchParams(window.location.search);
-    const placeCode = place?.insee_code ?? currentUrl.get("place");
-    const saleKey = selectedSale?.mutation_key ?? currentUrl.get("sale");
-    if (placeCode) params.set("place", placeCode);
+    if (currentUrl.get("place") && !place && placeRestorePending) return;
+    const placeCode = place?.insee_code;
+    const saleKey = selectedSale
+      ? String(selectedSale.source_row_key ?? selectedSale.mutation_key ?? "")
+      : currentUrl.get("sale");
+    if (placeCode && place) {
+      params.set("place", placeCode);
+      params.set("place_kind", place.kind);
+      params.set("place_label", place.label);
+      if (place.section) params.set("section", place.section);
+      if (place.address) params.set("place_address", place.address);
+      if (place.latitude !== undefined) params.set("lat", String(place.latitude));
+      if (place.longitude !== undefined) params.set("lon", String(place.longitude));
+    }
     if (saleKey) params.set("sale", String(saleKey));
     const search = params.toString();
     if (window.location.search !== `?${search}`) {
@@ -392,7 +422,7 @@ export default function ExplorerClient() {
       else window.history.pushState(null, "", `${window.location.pathname}?${search}`);
     }
     popNavigationRef.current = false;
-  }, [appliedFilters, department, hasSearched, page, pageSize, place, resultsView, selectedSale, sort, tab, urlHydrated, year]);
+  }, [appliedFilters, department, hasSearched, page, pageSize, place, placeRestorePending, resultsView, selectedSale, sort, tab, urlHydrated, year, manifest]);
 
   useEffect(() => {
     const restore = () => {
@@ -415,7 +445,11 @@ export default function ExplorerClient() {
       const restoredSort = params.get("sort") as SortColumn | null;
       if (restoredSort && SORT_COLUMNS.some((column) => column.key === restoredSort)) setSort({ column: restoredSort, direction: params.get("dir") === "ASC" ? "ASC" : "DESC" });
       setPlace(null);
+      setPlaceRestoreMessage("");
+      setPlaceRestorePending(Boolean(params.get("place")));
+      setNavigationRevision((value) => value + 1);
       setSelectedSale(null);
+      setSaleRestoreMessage("");
       setQueryFiles([]);
       setQueryGeographyFiles([]);
       setHasSearched(params.get("searched") === "1");
@@ -426,11 +460,40 @@ export default function ExplorerClient() {
   }, []);
 
   useEffect(() => {
-    const wanted = new URLSearchParams(window.location.search).get("place");
-    if (!wanted || place || !places.length) return;
-    const found = places.find((item) => item.insee_code === wanted && item.kind === "commune");
-    if (found) setPlace(found);
-  }, [places, place]);
+    const timer = window.setTimeout(() => {
+    const params = new URLSearchParams(window.location.search);
+    const wanted = params.get("place");
+    if (!wanted) {
+      setPlaceRestorePending(false);
+      return;
+    }
+    if (place || !places.length) return;
+    const kind = params.get("place_kind") === "section" ? "section" : "commune";
+    const section = params.get("section") ?? undefined;
+    const latitude = params.get("lat");
+    const longitude = params.get("lon");
+    const found = places.find((item) => item.insee_code === wanted && item.kind === kind
+      && (kind !== "section" || item.section === section));
+    const fallback = found ?? (kind === "section" ? undefined : places.find((item) => item.insee_code === wanted && item.kind === "commune"));
+    if (fallback) {
+      setPlace({
+        ...fallback,
+        label: params.get("place_label") ?? fallback.label,
+        section: section ?? fallback.section,
+        address: params.get("place_address") ?? undefined,
+        latitude: latitude !== null && Number.isFinite(Number(latitude)) ? Number(latitude) : fallback.latitude,
+        longitude: longitude !== null && Number.isFinite(Number(longitude)) ? Number(longitude) : fallback.longitude,
+      });
+      setPlaceRestorePending(false);
+      setPlaceRestoreMessage("");
+    } else {
+      setPlaceRestorePending(false);
+      if (kind === "section") setPlaceRestoreMessage(`La section cadastrale ${section ?? "demandée"} n’est pas disponible dans l’index publié. Aucun résultat à l’échelle de la commune ne sera affiché à sa place.`);
+      else setPlaceRestoreMessage("La commune demandée n’est pas disponible dans l’index publié.");
+    }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [navigationRevision, places, place]);
 
   useEffect(() => {
     let cancelled = false;
@@ -466,7 +529,14 @@ export default function ExplorerClient() {
         if (cancelled) return;
         setManifest(nextManifest);
         const urlYear = new URLSearchParams(window.location.search).get("year");
-        if (!urlYear) setYear(Object.keys(nextManifest.kpi_files ?? {}).sort((a, b) => Number(b) - Number(a))[0] ?? "all");
+        const availableKpiYears = Array.from(new Set([
+          ...Object.keys(nextManifest.kpi_files ?? {}),
+          ...(nextKpis.national ?? []).map((item) => String(item.year)),
+        ])).sort((a, b) => Number(b) - Number(a));
+        const selectedYear = urlYear === "all" || availableKpiYears.includes(urlYear ?? "")
+          ? urlYear!
+          : availableKpiYears[0] ?? "all";
+        setYear(selectedYear);
         setKpis(nextKpis);
         setPlaces(Array.from(placesByKey.values()));
         setLoadState("ready");
@@ -486,15 +556,18 @@ export default function ExplorerClient() {
     if (!rows.length) return undefined;
     return { ...rows[0], year: 0, transaction_count: rows.reduce((total, row) => total + row.transaction_count, 0), median_price: null, median_price_per_m2: null, median_surface: null };
   }, [kpis.national, year]);
-  const visibleCommunes = useMemo(() => {
+  const matchingCommunes = useMemo(() => {
     const yearFiltered = year === "all" ? (kpis.communes ?? [])
       : (kpis.communes ?? []).filter((item) => String(item.year) === year);
     const source = place
       ? yearFiltered.filter((item) => item.insee_code === place.insee_code)
       : yearFiltered;
     const term = communeQuery.trim().toLocaleLowerCase("fr");
-    const filtered = source.filter((item) => !term || item.commune.toLocaleLowerCase("fr").includes(term)
+    return source.filter((item) => !term || item.commune.toLocaleLowerCase("fr").includes(term)
       || item.insee_code.includes(term) || (item.code_postal ?? "").includes(term));
+  }, [communeQuery, kpis.communes, place, year]);
+  const visibleCommunes = useMemo(() => {
+    const filtered = [...matchingCommunes];
     filtered.sort((left, right) => {
       const a = left[communeSort.column];
       const b = right[communeSort.column];
@@ -504,12 +577,12 @@ export default function ExplorerClient() {
       return communeSort.direction === "ASC" ? compared : -compared;
     });
     return filtered.slice(communePage * communePageSize, (communePage + 1) * communePageSize);
-  }, [communePage, communePageSize, communeQuery, communeSort, kpis.communes, place, year]);
-  const communeCount = useMemo(() => (kpis.communes ?? []).filter((item) =>
-    (year === "all" || String(item.year) === year) && (!place || item.insee_code === place.insee_code)
-    && (!communeQuery.trim() || item.commune.toLocaleLowerCase("fr").includes(communeQuery.trim().toLocaleLowerCase("fr"))
-      || item.insee_code.includes(communeQuery.trim()) || (item.code_postal ?? "").includes(communeQuery.trim())),
-  ).length, [communeQuery, kpis.communes, place, year]);
+  }, [communePage, communePageSize, communeSort, matchingCommunes]);
+  const communeCount = matchingCommunes.length;
+  const distinctCommuneCount = new Set(matchingCommunes.map((item) => item.insee_code)).size;
+  const placeHistory = useMemo(() => place && place.kind === "commune"
+    ? (kpis.communes ?? []).filter((item) => item.insee_code === place.insee_code).sort((left, right) => left.year - right.year)
+    : [], [kpis.communes, place]);
   const availableYears = useMemo(() => Array.from(new Set(
     (kpis.communes ?? []).map((item) => String(item.year)),
   )).sort((a, b) => Number(b) - Number(a)), [kpis.communes]);
@@ -573,6 +646,9 @@ export default function ExplorerClient() {
 
       const conditions: string[] = [];
       if (place) conditions.push(`insee_code = '${quoteSql(place.insee_code)}'`);
+      if (place?.kind === "section" && place.section) {
+        conditions.push(`concat(coalesce(nullif(prefixe_section, ''), ''), coalesce(section, '')) = '${quoteSql(place.section)}'`);
+      }
       if (nextFilters.department || department !== "all") {
         const selected = nextFilters.department || department;
         if (selected !== "all") conditions.push(`code_departement = '${quoteSql(selected)}'`);
@@ -627,9 +703,10 @@ export default function ExplorerClient() {
           surface_terrain, nombre_pieces_principales,
           valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2,
           mutation_key, status, flag, latitude, longitude,
+          ${SOURCE_ROW_KEY_SQL} AS source_row_key,
           count(*) OVER() AS _total
         FROM resolved_sales ${where}
-        ORDER BY ${orderColumn} ${nextSort.direction} NULLS LAST, mutation_key ASC
+        ORDER BY ${orderColumn} ${nextSort.direction} NULLS LAST, mutation_key ASC, source_row_key ASC
         LIMIT ${nextPageSize + 1} OFFSET ${nextPage * nextPageSize}`;
       try {
         const result = await connection.query(sql);
@@ -637,8 +714,15 @@ export default function ExplorerClient() {
         setResultCount(records.length ? Number(records[0]._total) : nextPage === 0 ? 0 : resultCount);
         setSales(records.slice(0, nextPageSize));
         setPage(nextPage);
-        const wantedSale = nextPage === 0 ? new URLSearchParams(window.location.search).get("sale") : null;
-        setSelectedSale(records.find((record) => String(record.mutation_key ?? "") === wantedSale) ?? records[0] ?? null);
+        const wantedSale = new URLSearchParams(window.location.search).get("sale");
+        const restoredSale = wantedSale
+          ? records.find((record) => String(record.source_row_key ?? "") === wantedSale)
+            ?? records.find((record) => String(record.mutation_key ?? "") === wantedSale)
+          : undefined;
+        setSelectedSale(restoredSale ?? (wantedSale ? null : records[0] ?? null));
+        setSaleRestoreMessage(wantedSale && !restoredSale
+          ? "La vente liée n’est pas disponible dans cette sélection. Modifiez les filtres ou effacez ce lien de vente."
+          : "");
       } finally {
         await connection.close();
       }
@@ -654,8 +738,11 @@ export default function ExplorerClient() {
     if (!hasSearched || !urlHydrated || !manifest || restoredQueryRan.current) return;
     const requestedPlace = new URLSearchParams(window.location.search).get("place");
     if (requestedPlace && !place) return;
-    restoredQueryRan.current = true;
-    void runDetailsQuery(page, appliedFilters);
+    const timer = window.setTimeout(() => {
+      restoredQueryRan.current = true;
+      void runDetailsQuery(page, appliedFilters);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [appliedFilters, hasSearched, manifest, page, place, runDetailsQuery, urlHydrated]);
 
   async function searchAddress(event: FormEvent) {
@@ -677,12 +764,17 @@ export default function ExplorerClient() {
       const found = (result.features ?? []).map((feature): Place => {
         const properties = feature.properties ?? {};
         const cityCode = String(properties.citycode ?? "");
+        const address = [properties.housenumber, properties.street]
+          .map((part) => String(part ?? "").trim())
+          .filter(Boolean)
+          .join(" ");
         return {
           label: String(properties.label ?? "Adresse"),
           kind: "commune",
           insee_code: String(properties.citycode ?? ""),
           department: cityCode.startsWith("97") ? cityCode.slice(0, 3) : cityCode.slice(0, 2),
           code_postal: String(properties.postcode ?? ""),
+          address: address || undefined,
           longitude: feature.geometry?.coordinates?.[0],
           latitude: feature.geometry?.coordinates?.[1],
         };
@@ -695,7 +787,12 @@ export default function ExplorerClient() {
   }
 
   function choosePlace(next: Place) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("sale");
+    window.history.replaceState(null, "", url);
     setPlace(next);
+    setPlaceRestoreMessage("");
+    setPlaceRestorePending(false);
     setQuery(next.label);
     setTab("kpis");
     setSales([]);
@@ -704,16 +801,24 @@ export default function ExplorerClient() {
     setQueryPredicate("");
     setHasSearched(false);
     setSelectedSale(null);
+    setSaleRestoreMessage("");
+    restoredQueryRan.current = false;
     setBanPlaces([]);
     setPage(0);
     setDepartment(next.department);
     setResultCount(null);
-    setFilters((current) => ({ ...current, department: "" }));
-    setAppliedFilters((current) => ({ ...current, department: "" }));
+    setFilters((current) => ({ ...current, department: "", address: next.address ?? "" }));
+    setAppliedFilters((current) => ({ ...current, department: "", address: next.address ?? "" }));
   }
 
   function clearPlace() {
+    const selectedAddress = place?.address;
+    const url = new URL(window.location.href);
+    for (const key of ["place", "place_kind", "place_label", "place_address", "section", "lat", "lon", "sale"]) url.searchParams.delete(key);
+    window.history.replaceState(null, "", url);
     setPlace(null);
+    setPlaceRestoreMessage("");
+    setPlaceRestorePending(false);
     setQuery("");
     setDepartment("all");
     setSales([]);
@@ -722,8 +827,14 @@ export default function ExplorerClient() {
     setQueryPredicate("");
     setHasSearched(false);
     setSelectedSale(null);
+    setSaleRestoreMessage("");
+    restoredQueryRan.current = false;
     setPage(0);
     setResultCount(null);
+    if (selectedAddress) {
+      setFilters((current) => current.address === selectedAddress ? { ...current, address: "" } : current);
+      setAppliedFilters((current) => current.address === selectedAddress ? { ...current, address: "" } : current);
+    }
   }
 
   async function exportCsv() {
@@ -733,7 +844,6 @@ export default function ExplorerClient() {
     setQuerying(true);
     setDuckError("");
     try {
-      const duckdb = await import("@duckdb/duckdb-wasm");
       const database = await getDatabase();
       const connection = await database.connect();
       try {
@@ -755,7 +865,7 @@ export default function ExplorerClient() {
             )`
           : `WITH resolved_sales AS (SELECT * FROM ${salesSource})`;
         const exportOrder = sort.column === "price_per_m2" ? "valeur_fonciere / NULLIF(surface_reelle_bati, 0)" : sort.column;
-        const result = await connection.query(`${geographyCte} SELECT *, valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2 FROM resolved_sales ${queryPredicate} ORDER BY ${exportOrder} ${sort.direction} NULLS LAST, mutation_key ASC`);
+        const result = await connection.query(`${geographyCte} SELECT *, valeur_fonciere / NULLIF(surface_reelle_bati, 0) AS price_per_m2, ${SOURCE_ROW_KEY_SQL} AS source_row_key FROM resolved_sales ${queryPredicate} ORDER BY ${exportOrder} ${sort.direction} NULLS LAST, mutation_key ASC, source_row_key ASC`);
         const records = result.toArray().map((item) => item.toJSON() as Sale);
         if (!records.length) return;
         const columns = Object.keys(records[0]).filter((column) => !column.startsWith("_"));
@@ -779,7 +889,12 @@ export default function ExplorerClient() {
     setFilters((current) => ({ ...current, [key]: value }));
   }
 
-  const selectSale = useCallback((sale: Sale) => setSelectedSale(sale), []);
+  const selectSale = useCallback((sale: Sale) => { setSelectedSale(sale); setSaleRestoreMessage(""); }, []);
+  const selectedSaleIndex = selectedSale ? sales.indexOf(selectedSale) : -1;
+  const adjacentSale = (offset: number) => {
+    const next = sales[selectedSaleIndex + offset];
+    if (next) setSelectedSale(next);
+  };
   const mapCenter: [number, number] | undefined = place?.latitude !== undefined && place.longitude !== undefined
     ? [place.latitude, place.longitude]
     : undefined;
@@ -798,10 +913,10 @@ export default function ExplorerClient() {
     <main className="min-h-screen bg-[#f4f6f5] text-slate-900">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-[1480px] flex-wrap items-center gap-5 px-5 py-4 lg:px-10">
-          <a className="flex items-center gap-3 font-semibold tracking-tight" href="/">
+          <Link className="flex items-center gap-3 font-semibold tracking-tight" href="/">
             <span className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-950 text-sm font-bold text-emerald-50">DVF</span>
             <span className="text-lg">Explorer <span className="font-normal text-slate-400">/ France</span></span>
-          </a>
+          </Link>
           <form className="relative ml-auto flex min-w-[min(100%,520px)] flex-1 gap-2" onSubmit={searchAddress}>
             <label className="sr-only" htmlFor="place-search">Commune, code postal, section ou adresse</label>
             <input
@@ -859,9 +974,13 @@ export default function ExplorerClient() {
           </section>
         )}
 
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Indicateurs nationaux">
+        {placeRestoreMessage && <section role="alert" className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-950"><p>{placeRestoreMessage}</p><button type="button" onClick={clearPlace} className="rounded-md border border-amber-900/20 bg-white px-3 py-2 font-medium">Effacer ce lieu</button></section>}
+
+        <section aria-label={`Indicateurs nationaux${year === "all" ? " sur toutes les années" : year ? ` pour ${year}` : ""}`}>
+          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-sm font-semibold text-slate-700">France entière · {year === "all" ? "toutes les années sélectionnées" : year || "chargement…"}</h2>{year === "all" && <p className="text-xs text-slate-500">Les médianes se consultent par année ; elles ne sont pas additionnées entre millésimes.</p>}</div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            ["Transactions", number(national?.transaction_count), "sur la période publiée"],
+            ["Transactions", number(national?.transaction_count), year === "all" ? "cumul des années sélectionnées" : year ? `année ${year}` : "chargement de la période"],
             ["Prix médian", euro(national?.median_price), year === "all" ? "choisissez une année" : "biens confondus"],
             ["Prix médian au m²", euro(national?.median_price_per_m2), year === "all" ? "choisissez une année" : "biens bâtis renseignés"],
             ["Surface médiane", national?.median_surface ? `${number(national.median_surface)} m²` : "—", year === "all" ? "choisissez une année" : "surface bâtie"],
@@ -872,6 +991,7 @@ export default function ExplorerClient() {
               <p className="mt-1 text-xs text-slate-400">{note}</p>
             </article>
           ))}
+          </div>
         </section>
 
         <section className="mt-7 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-900/[0.02]">
@@ -880,9 +1000,9 @@ export default function ExplorerClient() {
               <p className="text-xs uppercase tracking-widest text-slate-400">Zone sélectionnée</p>
               <h2 className="mt-1 text-xl font-semibold">{placeLabel}</h2>
             </div>
-            <label className="flex items-center gap-2 text-sm text-slate-500">Année
-              <select value={year} onChange={(event) => { setYear(event.target.value); setPage(0); setSales([]); setQueryFiles([]); setQueryGeographyFiles([]); setQueryPredicate(""); setHasSearched(false); setSelectedSale(null); setResultCount(null); }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800">
-                <option value="all">Toutes</option>{availableYears.map((item) => <option key={item} value={item}>{item}</option>)}
+            <label className="flex items-center gap-2 text-sm text-slate-500">Année des ventes
+            <select value={year} onChange={(event) => { setYear(event.target.value); setPage(0); setSales([]); setQueryFiles([]); setQueryGeographyFiles([]); setQueryPredicate(""); setHasSearched(false); setSelectedSale(null); setResultCount(null); }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800">
+                {!year && <option value="" disabled>Chargement…</option>}<option value="all">Toutes les années</option>{availableYears.map((item) => <option key={item} value={item}>{item}</option>)}
               </select>
             </label>
             <div className="flex rounded-lg bg-slate-100 p-1" role="tablist" aria-label="Type de vue">
@@ -895,25 +1015,59 @@ export default function ExplorerClient() {
 
           {tab === "kpis" ? (
             <div>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3"><label className="sr-only" htmlFor="commune-filter">Filtrer les communes</label><input id="commune-filter" value={communeQuery} onChange={(event) => { setCommuneQuery(event.target.value); setCommunePage(0); }} placeholder="Filtrer une commune, un code postal ou INSEE…" className="h-10 min-w-[260px] rounded-md border border-slate-300 bg-white px-3 text-sm"/><p className="text-sm text-slate-500">{number(communeCount)} commune{communeCount === 1 ? "" : "s"}</p><div className="flex items-center gap-2"><label className="text-xs text-slate-500">Lignes<select value={communePageSize} onChange={(event) => { setCommunePageSize(Number(event.target.value)); setCommunePage(0); }} className="ml-1 h-9 rounded-md border border-slate-300 bg-white px-2"><option value={100}>100</option><option value={250}>250</option><option value={500}>500</option></select></label><button disabled={communePage === 0} onClick={() => setCommunePage((value) => Math.max(0, value - 1))} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Précédent</button><span className="text-xs text-slate-500">Page {communePage + 1} / {Math.max(1, Math.ceil(communeCount / communePageSize))}</span><button disabled={(communePage + 1) * communePageSize >= communeCount} onClick={() => setCommunePage((value) => value + 1)} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Suivante</button></div></div>
+              {placeHistory.length > 0 && <section className="border-b border-slate-200 bg-emerald-50/50 px-5 py-5" aria-labelledby="location-trend-title">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div><p className="text-xs font-semibold uppercase tracking-wide text-emerald-900">{place?.address ? "Historique de la commune" : "Évolution de la commune"}</p><h3 id="location-trend-title" className="mt-1 text-lg font-semibold">Prix médian au m² · {place?.label}</h3><p className="mt-1 text-sm text-slate-600">Biens bâtis renseignés, toutes catégories confondues. Les millésimes peuvent être partiels. Le nombre de ventes indiqué est le total communal ; le nombre de transactions admissibles au calcul €/m² n’est pas publié dans les indicateurs actuels.</p>{place?.address && <p className="mt-1 text-sm font-medium text-amber-900">L’adresse choisie sert à filtrer les transactions ; ces indicateurs historiques restent calculés à l’échelle de la commune.</p>}</div>
+                  <button type="button" onClick={() => { setTab("details"); void runDetailsQuery(0, appliedFilters); }} className="rounded-md border border-emerald-900/20 bg-white px-3 py-2 text-sm font-medium text-emerald-950">Afficher les transactions</button>
+                </div>
+                {placeHistory.length > 1 ? <div className="mt-4 overflow-x-auto">
+                  {(() => {
+                    const values = placeHistory.map((item) => Number(item.median_price_per_m2 ?? 0));
+                    const positive = values.filter((value) => value > 0);
+                    if (!positive.length) return <p className="rounded-lg border border-emerald-900/10 bg-white px-4 py-3 text-sm text-slate-600">Aucun prix médian au m² exploitable n’est publié pour cette série.</p>;
+                    const min = Math.min(...positive);
+                    const max = Math.max(...positive);
+                    const span = max - min || max || 1;
+                    const points = placeHistory.map((item, index) => ({
+                      item,
+                      x: 24 + index * (552 / Math.max(1, placeHistory.length - 1)),
+                      y: 128 - ((Number(item.median_price_per_m2 ?? 0) - min) / span) * 96,
+                      valid: Number(item.median_price_per_m2) > 0,
+                    }));
+                    return <><svg viewBox="0 0 600 160" role="img" aria-label={`Évolution du prix médian au mètre carré à ${place?.label}`} className="h-40 min-w-[480px] w-full">
+                      <line x1="24" y1="130" x2="576" y2="130" stroke="#cbd5e1" strokeWidth="1" />
+                      {points.slice(1).map((point, index) => {
+                        const previous = points[index];
+                        return previous.valid && point.valid ? <line key={`segment-${point.item.year}`} x1={previous.x} y1={previous.y} x2={point.x} y2={point.y} stroke="#047857" strokeWidth="3" strokeLinecap="round" /> : null;
+                      })}
+                      {points.map((point) => <g key={point.item.year}>{point.valid && <><circle cx={point.x} cy={point.y} r="5" fill="#047857"/><text x={point.x} y={Math.max(12, point.y - 10)} textAnchor="middle" className="fill-emerald-950 text-[10px]">{euro(point.item.median_price_per_m2)}</text></>}<text x={point.x} y="151" textAnchor="middle" className="fill-slate-600 text-[11px]">{publishedPeriod(manifest, point.item.year)}</text></g>)}
+                    </svg><ul className="sr-only">{placeHistory.map((item) => <li key={item.year}>{publishedPeriod(manifest, item.year)} : {euro(item.median_price_per_m2)}, {number(item.transaction_count)} mutations totales</li>)}</ul></>;
+                  })()}
+                </div> : <p className="mt-4 rounded-lg border border-emerald-900/10 bg-white px-4 py-3 text-sm text-slate-600">La série annuelle complète n’est pas disponible pour cette commune.</p>}
+                <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600">{placeHistory.map((item) => <span key={`trend-${item.year}`}><strong>{publishedPeriod(manifest, item.year)}</strong> · {number(item.transaction_count)} mutations au total · médiane {euro(item.median_price_per_m2)}/m²</span>)}</div>
+              </section>}
+              {place?.kind === "section" && <p className="border-b border-slate-200 bg-amber-50 px-5 py-3 text-sm text-amber-950">Les indicateurs ci-dessous sont ceux de la commune entière. Les ventes peuvent, elles, être filtrées sur la section cadastrale sélectionnée.</p>}
+              {place?.kind === "commune" && place.latitude !== undefined && !place.address && <p className="border-b border-slate-200 bg-amber-50 px-5 py-3 text-sm text-amber-950">Le lieu a été géolocalisé, mais aucun numéro ou nom de voie exploitable n’a été identifié. Les ventes affichées seront celles de la commune.</p>}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-3"><label className="sr-only" htmlFor="commune-filter">Filtrer les communes</label><input id="commune-filter" value={communeQuery} onChange={(event) => { setCommuneQuery(event.target.value); setCommunePage(0); }} placeholder="Filtrer une commune, un code postal ou INSEE…" className="h-10 min-w-[260px] rounded-md border border-slate-300 bg-white px-3 text-sm"/><p className="text-sm text-slate-500">{year === "all" ? <>{number(communeCount)} résultats commune-année · {number(distinctCommuneCount)} communes distinctes</> : <>{number(distinctCommuneCount)} commune{distinctCommuneCount === 1 ? "" : "s"} · {number(communeCount)} résultats</>}</p><div className="flex items-center gap-2"><label className="text-xs text-slate-500">Lignes<select value={communePageSize} onChange={(event) => { setCommunePageSize(Number(event.target.value)); setCommunePage(0); }} className="ml-1 h-9 rounded-md border border-slate-300 bg-white px-2"><option value={100}>100</option><option value={250}>250</option><option value={500}>500</option></select></label><button disabled={communePage === 0} onClick={() => setCommunePage((value) => Math.max(0, value - 1))} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Précédent</button><span className="text-xs text-slate-500">Page {communePage + 1} / {Math.max(1, Math.ceil(communeCount / communePageSize))}</span><button disabled={(communePage + 1) * communePageSize >= communeCount} onClick={() => setCommunePage((value) => value + 1)} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Suivante</button></div></div>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+              <table className="w-full min-w-[900px] border-collapse text-left text-sm">
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                  <tr>{([{key:"commune", label:"Commune"},{key:"transaction_count",label:"Ventes"},{key:"median_price",label:"Prix médian"},{key:"median_price_per_m2",label:"€/m² médian"},{key:"median_surface",label:"Surface médiane"}] as Array<{key:KpiSort;label:string}>).map(({key,label}) => <th key={key} className="px-5 py-3 font-medium"><button onClick={() => setCommuneSort((current) => ({ column:key, direction:current.column === key && current.direction === "ASC" ? "DESC" : "ASC" }))}>{label}{communeSort.column === key ? (communeSort.direction === "ASC" ? " ↑" : " ↓") : ""}</button></th>)}<th className="px-5 py-3 font-medium">Fourchette €/m²</th><th className="px-5 py-3 font-medium">Explorer</th></tr>
+                  <tr>{([{key:"commune", label:"Commune"},{key:"year",label:"Année"},{key:"transaction_count",label:"Ventes"},{key:"median_price",label:"Prix médian"},{key:"median_price_per_m2",label:"€/m² médian"},{key:"median_surface",label:"Surface médiane"}] as Array<{key:KpiSort;label:string}>).map(({key,label}) => <th key={key} className="px-5 py-3 font-medium"><button onClick={() => setCommuneSort((current) => ({ column:key, direction:current.column === key && current.direction === "ASC" ? "DESC" : "ASC" }))}>{label}{communeSort.column === key ? (communeSort.direction === "ASC" ? " ↑" : " ↓") : ""}</button></th>)}<th className="px-5 py-3 font-medium">Fourchette €/m²</th><th className="px-5 py-3 font-medium">Explorer</th></tr>
                 </thead>
                 <tbody>
                   {visibleCommunes.map((item) => (
                     <tr key={`${item.insee_code}-${item.year}`} className="border-t border-slate-100 hover:bg-emerald-50/40">
-                      <td className="px-5 py-3 font-medium">{item.commune}<span className="ml-2 text-xs font-normal text-slate-400">{item.code_postal ?? item.insee_code}</span></td>
+                      <td className="px-5 py-3 font-medium"><button type="button" onClick={() => { const found = places.find((candidate) => candidate.kind === "commune" && candidate.insee_code === item.insee_code); if (found) choosePlace(found); }} className="text-left underline decoration-emerald-900/30 underline-offset-2 hover:text-emerald-900">{item.commune}</button><span className="ml-2 text-xs font-normal text-slate-400">{item.code_postal ?? item.insee_code}</span></td>
+                      <td className="px-5 py-3">{item.year}</td>
                       <td className="px-5 py-3">{number(item.transaction_count)}</td>
                       <td className="px-5 py-3">{euro(item.median_price)}</td>
                       <td className="px-5 py-3">{euro(item.median_price_per_m2)}</td>
                       <td className="px-5 py-3">{item.median_surface ? `${number(item.median_surface)} m²` : "—"}</td>
                       <td className="px-5 py-3 text-slate-500">{euro(item.p25_price_per_m2)} – {euro(item.p75_price_per_m2)}</td>
-                      <td className="px-5 py-3"><button onClick={() => { const found = places.find((candidate) => candidate.kind === "commune" && candidate.insee_code === item.insee_code); if (found) { choosePlace(found); setTab("details"); } }} className="font-medium text-emerald-900 underline underline-offset-2">Voir les ventes</button></td>
+                      <td className="px-5 py-3"><button onClick={() => { const found = places.find((candidate) => candidate.kind === "commune" && candidate.insee_code === item.insee_code); if (found) { choosePlace(found); setYear(String(item.year)); setTab("details"); setHasSearched(true); } }} className="font-medium text-emerald-900 underline underline-offset-2">Voir les ventes</button></td>
                     </tr>
                   ))}
-                  {visibleCommunes.length === 0 && <tr><td colSpan={7} className="px-5 py-12 text-center text-slate-500">{loadState === "ready" ? "Aucune commune dans cette sélection." : "Les indicateurs apparaîtront dès que les données seront publiées."}</td></tr>}
+                  {visibleCommunes.length === 0 && <tr><td colSpan={8} className="px-5 py-12 text-center text-slate-500">{loadState === "ready" ? "Aucune commune dans cette sélection." : "Les indicateurs apparaîtront dès que les données seront publiées."}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -941,6 +1095,7 @@ export default function ExplorerClient() {
                   <div className="flex flex-wrap items-center gap-2"><div className="flex rounded-md border border-slate-200 bg-white p-1" aria-label="Affichage des résultats">{([['list','Liste'],['split','Côte à côte'],['map','Carte']] as Array<[ResultsView,string]>).map(([value,label]) => <button key={value} type="button" aria-pressed={resultsView === value} onClick={() => setResultsView(value)} className={`rounded px-2 py-1 text-xs ${resultsView === value ? "bg-emerald-950 text-white" : "text-slate-600"}`}>{label}</button>)}</div><label className="text-xs text-slate-500">Lignes<select value={pageSize} onChange={(event) => { const size = Number(event.target.value); setPageSize(size); setPage(0); void runDetailsQuery(0, appliedFilters, sort, size); }} className="ml-1 h-9 rounded-md border border-slate-300 bg-white px-2 text-xs text-slate-800"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label><button onClick={() => void exportCsv()} disabled={!sales.length || querying} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Exporter tous les résultats CSV</button><button disabled={querying || page === 0} onClick={() => void runDetailsQuery(0, appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">« Première</button><button disabled={querying || page === 0} onClick={() => void runDetailsQuery(page - 1, appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">‹ Précédente</button><button disabled={querying || resultCount === null || (page + 1) * pageSize >= resultCount} onClick={() => void runDetailsQuery(page + 1, appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Suivante ›</button><button disabled={querying || resultCount === null || (page + 1) * pageSize >= resultCount} onClick={() => void runDetailsQuery(Math.max(0, Math.ceil((resultCount ?? 0) / pageSize) - 1), appliedFilters)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 disabled:opacity-40">Dernière »</button></div>
                 </div>
                 {duckError && <p role="alert" className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800">{duckError}</p>}
+                {saleRestoreMessage && <p role="alert" className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-950">{saleRestoreMessage}<button type="button" className="ml-2 font-semibold underline" onClick={() => { const url = new URL(window.location.href); url.searchParams.delete("sale"); window.history.replaceState(null, "", url); setSaleRestoreMessage(""); }}>Effacer le lien de vente</button></p>}
                 {Object.entries(appliedFilters).filter(([key, value]) => Boolean(value) && key !== "department").length > 0 && <div className="mb-3 flex flex-wrap gap-2" aria-label="Filtres actifs">{Object.entries(appliedFilters).filter(([key, value]) => Boolean(value) && key !== "department").map(([key, value]) => <button key={key} onClick={() => { const next = { ...appliedFilters, [key]: "" }; setAppliedFilters(next); setFilters((current) => ({ ...current, [key]: "" })); setPage(0); void runDetailsQuery(0, next); }} className="rounded-full border border-emerald-900/20 bg-emerald-50 px-3 py-1 text-xs text-emerald-950">{key}: {value} ×</button>)}</div>}
                 {resultsView !== "map" && <div className="space-y-2 md:hidden">{sales.map((sale, index) => <button key={`${sale.mutation_key ?? "sale"}-${index}`} type="button" onClick={() => setSelectedSale(sale)} className={`w-full rounded-lg border p-4 text-left ${selectedSale === sale ? "border-emerald-700 bg-emerald-50" : "border-slate-200 bg-white"}`}><span className="flex items-start justify-between gap-4"><span><span className="block font-semibold">{euro(sale.valeur_fonciere)}</span><span className="mt-1 block text-sm text-slate-600">{String(sale.type_local ?? "Bien non précisé")} · {String(sale.commune ?? "Commune inconnue")}</span></span><span className="shrink-0 text-right text-xs text-slate-500">{String(sale.date_mutation ?? "—")}<br/>{sale.surface_reelle_bati ? `${number(sale.surface_reelle_bati)} m²` : "Surface —"}</span></span></button>)}{!sales.length && <p className="rounded-lg border border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500">Aucune vente ne correspond aux filtres.</p>}</div>}
                 {resultsView !== "map" && <div className="hidden overflow-x-auto rounded-lg border border-slate-200 md:block">
@@ -961,7 +1116,12 @@ export default function ExplorerClient() {
                       <p className="text-xs font-semibold uppercase tracking-wider text-emerald-900">Détail de la ligne DVF</p>
                       <h3 className="mt-1 text-lg font-semibold">{String(selectedSale.commune ?? "Commune non précisée")} · {String(selectedSale.date_mutation ?? "Date non précisée")}</h3>
                     </div>
-                    <button onClick={() => { const url = new URL(window.location.href); url.searchParams.set("sale", String(selectedSale.mutation_key ?? "")); void navigator.clipboard?.writeText(url.toString()); }} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium">Copier le lien</button>
+                    <div className="flex flex-wrap gap-2">
+                      <button disabled={selectedSaleIndex <= 0} onClick={() => adjacentSale(-1)} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium disabled:opacity-40" aria-label="Ligne précédente">Précédente</button>
+                      <button disabled={selectedSaleIndex < 0 || selectedSaleIndex >= sales.length - 1} onClick={() => adjacentSale(1)} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium disabled:opacity-40" aria-label="Ligne suivante">Suivante</button>
+                      <button onClick={() => { const url = new URL(window.location.href); url.searchParams.set("sale", String(selectedSale.source_row_key ?? selectedSale.mutation_key ?? "")); void navigator.clipboard?.writeText(url.toString()); }} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium">Copier le lien</button>
+                      <button onClick={() => { const url = new URL(window.location.href); url.searchParams.delete("sale"); window.history.replaceState(null, "", url); setSelectedSale(null); }} className="rounded-md border border-emerald-800/20 bg-white px-3 py-2 text-xs font-medium">Fermer</button>
+                    </div>
                   </div>
                   <dl className="mt-4 grid gap-x-5 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
                     {([["Valeur foncière", euro(selectedSale.valeur_fonciere)], ["Nature", selectedSale.nature_mutation], ["Type de local", selectedSale.type_local], ["Pièces principales", selectedSale.nombre_pieces_principales], ["Surface bâtie", selectedSale.surface_reelle_bati ? `${number(selectedSale.surface_reelle_bati)} m²` : "—"], ["Surface terrain", selectedSale.surface_terrain ? `${number(selectedSale.surface_terrain)} m²` : "—"], ["Adresse publiée", [selectedSale.no_voie, selectedSale.btq, selectedSale.type_voie, selectedSale.voie].filter(Boolean).join(" ") || "Non renseignée"], ["Code postal / INSEE", `${String(selectedSale.code_postal ?? "—")} / ${String(selectedSale.insee_code ?? "—")}`], ["Parcelle", [selectedSale.prefixe_section, selectedSale.section, selectedSale.no_plan].filter(Boolean).join(" ") || "Non renseignée"]] as Array<[string, unknown]>).map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-0.5 font-medium">{String(value ?? "—")}</dd></div>)}
