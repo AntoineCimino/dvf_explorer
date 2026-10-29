@@ -14,6 +14,11 @@ et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
 
 ### Local pipeline
 
+- **Data audit (implemented):** every new ingestion compares independent raw-TXT
+  CSV counts and per-department counts with the generated Parquet, checks the
+  source SHA-256 against the registry, reports exact duplicate rows and date
+  range, and stops on mismatches. `python -m src.main audit` also checks the
+  export manifest and emits a path-free JSON report.
 - **013 — Public repository hygiene:** attribution, license, ignore rules, and
   crawler protections.
 - **001 — Source registry:** record byte hashes and version metadata without
@@ -66,26 +71,55 @@ et attribue clairement les données à la DGFiP en renvoyant vers data.gouv.fr.
 
 ### Sale explorer usability backlog
 
-- **UI-001 — Result semantics and detail:** define a result as a source row and
+- **UI-001 — Result semantics and detail (implemented):** define a result as a source row and
   clearly explain when one mutation spans multiple properties or parcels.
-- **UI-002 — National search:** search every published department without
-  requiring a commune first; default to the latest available year and support
-  department, postal code, commune, and year scopes.
-- **UI-003 — Filters:** add date bounds, price and surface ranges, rooms, local
+- **UI-002 — National search (partially implemented):** search every published
+  department without requiring a commune first; support department, postal
+  code, commune, cadastral section, and year scopes. When geocoding returns a
+  street/number, the transaction filter is prefilled and applied as a text
+  match. Exact-address precision, formatting variants, and search usability
+  still need validation against known records and users.
+- **UI-003 — Filters (implemented):** add date bounds, price and surface ranges, rooms, local
   type, mutation nature, and removable active filters with input validation.
-- **UI-004 — Results controls:** exact result count, sortable columns, stable
+- **UI-004 — Results controls (implemented):** exact result count, sortable columns, stable
   ordering, selectable page size, and first/previous/next/last navigation.
-- **UI-005 — Shareable state:** encode territory, year, filters, sort, page, and
-  selected sale in the URL; restore the view on reload and browser navigation.
-- **UI-006 — Detail and export:** show available source fields and export all
+- **UI-005 — Shareable state (partially implemented):** encode territory, year,
+  filters, sort, page, and selected sale in the URL; restore the view on reload
+  and browser navigation. Missing sale links now report that the linked row is
+  unavailable instead of opening another row. Browser-history and shared-link
+  journeys still need validation against live published data.
+- **UI-006 — Detail and export (implemented):** show available source fields and export all
   normalized source fields and export all filtered results, with a clear notice
   when an export is large.
-- **UI-007 — Map and geography:** synchronize list and map selection; publish
+- **UI-007 — Map and geography (implemented):** synchronize list and map selection; publish
   only defensible geographic matches and show when rows have no coordinates.
-- **UI-008 — Indicator explorer:** search, sort, paginate, and open commune
-  sales from the commune indicators.
-- **UI-009 — Mobile and keyboard:** ensure filter panels, result tables,
-  suggestions, and sale details remain usable on narrow screens and by keyboard.
+- **UI-008 — Indicator explorer (partially implemented):** search, sort, paginate,
+  and open commune sales from the commune indicators. Each row now displays its
+  year, all-years counts distinguish commune-year results from distinct
+  communes, the latest available year is selected after URL restoration, and a
+  selected commune shows its published median-price-per-square-metre series,
+  with source semester labels where available. The chart separately labels
+  total mutation counts and explains that the eligible €/m² sample count is not
+  present in the current KPI contract. Statistical definitions and the full
+  location deep dive still need independent data review and design work.
+- **UI-009 — Mobile and keyboard (implementation present, validation pending):**
+  filter panels, result tables, suggestions, and sale details have responsive
+  and keyboard affordances. Confirm the core user journeys with accessibility
+  checks and representative users before marking complete.
+- **UI-010 — Nearby comparable locations:** add an explicit radius selector and
+  nearby commune/neighborhood results with distance, property mix, period,
+  sample size, price level, and trend. Use defensible official geographic
+  points or boundaries; do not use transaction-parcel centroids as commune
+  locations. Define similarity criteria and show when the available sample is
+  too small.
+- **UI-011 — Address and cadastral precision:** verify that address queries
+  match the published DVF number/street fields and that section queries match
+  both INSEE code and cadastral section. Clearly label when summaries fall back
+  to commune-level KPIs.
+- **UI-012 — KPI observation counts:** publish per-metric eligible sample counts
+  (especially mutations with a usable built surface for €/m²) alongside total
+  mutations. Keep the observation unit and aggregation rules in the export
+  contract, and regenerate all currently published annual KPI bundles.
 
 The source data currently present on the separate data host covers 2021–2026.
 Official geolocation files and department indexes cover 2021-S2 through
@@ -99,6 +133,12 @@ imported before that part of the goal is complete. The sale table currently
 queries published Parquet files in the browser; nationwide searches can involve
 many department files, so a more efficient query service or search index may be
 needed as coverage grows.
+
+The independent raw-TXT-to-Parquet audit passes for every local published
+snapshot currently available (2021–2026). It confirmed matching total and
+department row counts and registered source checksums. Re-run it for each
+historical archive as it is recovered; audit scope and limitations are in
+[`docs/data_audit.md`](data_audit.md).
 
 ## Data handling gates
 
