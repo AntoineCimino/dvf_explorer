@@ -9,11 +9,19 @@ import http.client
 import json
 from pathlib import Path, PurePosixPath
 import re
+import time
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 
 USER_AGENT = "dvf-explorer/0.1 (data host client)"
+UPLOAD_ATTEMPTS = 5
+UPLOAD_BACKOFF_SECONDS = 5.0
+RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
+
+
+class _TransientUploadError(RuntimeError):
+    """Upload failure worth retrying (5xx, throttling, network drop)."""
 
 
 def fetch_manifest(site_url: str, exports_dir: Path) -> dict | None:
@@ -130,7 +138,7 @@ def _content_type(path: Path) -> tuple[str, str | None]:
     return "application/json; charset=utf-8", None
 
 
-def _upload_one(site_url: str, relative: str, source: Path, token: str) -> None:
+def _upload_once(site_url: str, relative: str, source: Path, token: str) -> None:
     parts = urlsplit(site_url)
     if parts.scheme != "https" or not parts.hostname:
         raise ValueError("Data host must be an HTTPS URL")
@@ -154,10 +162,49 @@ def _upload_one(site_url: str, relative: str, source: Path, token: str) -> None:
         connection.send(b"0\r\n\r\n")
         response = connection.getresponse()
         response.read(4096)
+        if response.status in RETRYABLE_STATUSES:
+            raise _TransientUploadError(f"Upload failed with HTTP {response.status} for {relative}")
         if response.status not in {200, 201, 204}:
             raise RuntimeError(f"Upload failed with HTTP {response.status} for {relative}")
+    except OSError as error:
+        raise _TransientUploadError(f"Upload connection error for {relative}: {type(error).__name__}") from None
     finally:
         connection.close()
+
+
+def _upload_one(site_url: str, relative: str, source: Path, token: str) -> None:
+    """Upload one file, retrying transient failures (PUT is idempotent)."""
+    for attempt in range(1, UPLOAD_ATTEMPTS + 1):
+        try:
+            return _upload_once(site_url, relative, source, token)
+        except _TransientUploadError:
+            if attempt == UPLOAD_ATTEMPTS:
+                raise
+            time.sleep(UPLOAD_BACKOFF_SECONDS * 2 ** (attempt - 1))
+
+
+def _remote_size(site_url: str, relative: str) -> int | None:
+    """Size of an already-published object, or None if absent/unknown (never raises)."""
+    url = site_url.rstrip("/") + "/api/data/" + "/".join(quote(part, safe="") for part in _safe_relative(relative).split("/"))
+    try:
+        request = Request(url, method="HEAD", headers={"User-Agent": USER_AGENT})
+        with urlopen(request, timeout=30) as response:
+            length = response.headers.get("Content-Length")
+            return int(length) if length and response.headers.get("Content-Encoding") is None else None
+    except Exception:
+        return None
+
+
+def _upload_unless_published(site_url: str, relative: str, source: Path, token: str) -> bool:
+    """Upload unless the host already has an object of identical size. Returns True if uploaded.
+
+    Data paths are versioned and written deterministically, so equal size at the same
+    path means a previous (partially failed) run already published these bytes.
+    """
+    if _remote_size(site_url, relative) == source.stat().st_size:
+        return False
+    _upload_one(site_url, relative, source, token)
+    return True
 
 
 def upload_exports(
@@ -185,10 +232,13 @@ def upload_exports(
     data_files = [path for path in files if path.name != "manifest.json"]
     manifest_files = [path for path in files if path.name == "manifest.json"]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(
-            lambda path: _upload_one(site_url, path.relative_to(root).as_posix(), path, token),
+        results = list(pool.map(
+            lambda path: _upload_unless_published(site_url, path.relative_to(root).as_posix(), path, token),
             data_files,
         ))
+    skipped = results.count(False)
+    if skipped:
+        print(f"Skipped {skipped} files already published with identical size.")
     for path in manifest_files:
         _upload_one(site_url, path.relative_to(root).as_posix(), path, token)
     return len(files)
