@@ -1,5 +1,10 @@
 # DVF Explorer
 
+The local experimental DPE component is maintained under [`dpe/`](dpe/README.md),
+migrated from the now-archived Data Web Framework. It currently generates
+synthetic demo data; official DPE ingestion and DVF/DPE linkage are future work
+in [the DPE backlog](docs/dpe_backlog.md). It is not part of the published DVF pipeline.
+
 DVF Explorer is an open-source project to preserve successive public DVF
 publication snapshots, track row-level changes, and serve geographic summaries
 and transaction details through browser explorers covering the source's French

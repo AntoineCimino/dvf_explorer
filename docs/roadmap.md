@@ -140,6 +140,34 @@ department row counts and registered source checksums. Re-run it for each
 historical archive as it is recovered; audit scope and limitations are in
 [`docs/data_audit.md`](data_audit.md).
 
+## Proposed DVF/DPE public-interest extension — 2026-11-05
+
+### DVF-DPE-001 Assess historical sales and national DPE linkage
+
+**Priority:** MEDIUM  **Size:** M  **Status:** TODO (study only)
+**Deps:** none for scoping; recovering historical DVF and sourcing/versioning DPE are prerequisites for comprehensive results.
+**Files:** `docs/roadmap.md`, `docs/exports_contract.md`, future domain ingestion/matching modules after design.
+**Owner decision (2026-11-05):** DPE now belongs to DVF Explorer. The inherited
+prototype, Docker setup and tests are in `dpe/`; active domain work is tracked
+in `docs/dpe_backlog.md` (DPE-001 through DPE-004). The generic framework is
+archived for possible later reuse. The transfer does not implement real DPE ingestion.
+
+#### User Intent
+- Combine official DVF publications and recovered historical archives with the national DPE datasets to study energy-performance distributions and DPE data quality in France, as an open-source public-interest project.
+- Maintain DPE domain work in DVF Explorer; keep generic framework work frozen in its archive until explicitly resumed.
+
+**Work:**
+- [ ] Define what “DPE quality” means: energy performance, dataset coverage/completeness, consistency or diagnostic reliability. Do not claim that linking sales and DPE proves the physical accuracy of a diagnosis.
+- [ ] Inventory official DPE datasets, dates, schema changes, identifiers, reuse conditions and storage/update requirements; distinguish all available DPE records from complete national housing coverage.
+- [ ] Specify address/building/parcel and temporal matching, multiple diagnoses per property, repeated sales and multi-property mutations; retain provenance, confidence, unmatched and ambiguous records. Never force a one-to-one match or attach a later DPE to an earlier sale without an explicit analytical rule.
+- [ ] Propose coverage and uncertainty indicators and validate a bounded sample against source records before any national ingestion or publication.
+- [x] Transfer DPE domain ownership and prototype to DVF Explorer (`dpe/`).
+- [ ] Define export/API boundaries and measured disk/RAM requirements through `docs/dpe_backlog.md`; the archived framework is not a blocking dependency.
+**Done when:**
+- [ ] A source-backed feasibility/design note defines the question, matching rules, limitations and acceptance measures.
+- [ ] A bounded validation protocol and implementation backlog are proposed; no new data ingestion or public publication is implied by this planning ticket.
+- [ ] Existing attribution, no-index and non-re-identification gates remain explicit for combined outputs.
+
 ## Data handling gates
 
 - Never commit raw DVF files or generated transaction-level exports to this

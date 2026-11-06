@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "date": "2026-11-05",
+  "source_repository": "https://github.com/AntoineCimino/data-web-framework",
+  "source_commit": "a7b97722dd6db6adb73bf91ef3077102b03d45a6",
+  "destination": "immo/dvf_explorer/dpe",
+  "files": [
+    {
+      "source": "Dockerfile",
+      "destination": "Dockerfile",
+      "source_sha256": "43ed76f7311c54b3c504f3858f9c31dabb8ef07f2f6f4b93704c2cf189e57112",
+      "destination_sha256": "772d403182a9e060126d9f07ae5111f9cb2b6038badcbcc38e50d6e06964f5d1",
+      "modified_for_migration": true
+    },
+    {
+      "source": "Makefile",
+      "destination": "Makefile",
+      "source_sha256": "1d2dc62ae9cc47f235b1dcdc19d9bb4ec5e202a33c565548e3199b12b33840d8",
+      "destination_sha256": "cd91e15a6da72a7a08a694c5ab3dd8593d4b154084b724f0f7de229590a98975",
+      "modified_for_migration": true
+    },
+    {
+      "source": "README.md",
+      "destination": "docs/legacy/README.md",
+      "source_sha256": "5582b923a024efe96c768d40289041ba6d7fdf50822f4ccda0b67a7c2405b7cc",
+      "destination_sha256": "6acd5929004bc78be5bc0667a8246b68bef81e74d671cfa85e9341e1251911b5",
+      "modified_for_migration": true
+    },
+    {
+      "source": "SETUP.md",
+      "destination": "docs/legacy/SETUP.md",
+      "source_sha256": "fe60d17c16cca3c7f5ec8fdb1a71931fff5e38905ea5b5fec268defc6f1bacd8",
+      "destination_sha256": "15de4bb345a2eed54009c85a29c2b64a7ac0609f13b9d37509f1b7caaf2893d8",
+      "modified_for_migration": true
+    },
+    {
+      "source": "docker-compose.yml",
+      "destination": "docker-compose.yml",
+      "source_sha256": "a1ee6e01b014c98fa19b3506ca5545efec4bc7e7980bdd91f45885e4a260e63c",
+      "destination_sha256": "e9d64dc80c29e6129dd114eae16b43a2332e41b99067b80a68d2d8b8d2d8c3a2",
+      "modified_for_migration": true
+    },
+    {
+      "source": "requirements.txt",
+      "destination": "requirements.txt",
+      "source_sha256": "65226f21a16e85d858c339da413dfdb542f2ee43cc7cd7e153e17eb26a1d0a49",
+      "destination_sha256": "65226f21a16e85d858c339da413dfdb542f2ee43cc7cd7e153e17eb26a1d0a49",
+      "modified_for_migration": false
+    },
+    {
+      "source": "src/__init__.py",
+      "destination": "dpe_pilot/__init__.py",
+      "source_sha256": "aae49e26519716acdf3c401195c614c24ffb338d4dcc90d87cd25db0ae5a900d",
+      "destination_sha256": "aae49e26519716acdf3c401195c614c24ffb338d4dcc90d87cd25db0ae5a900d",
+      "modified_for_migration": false
+    },
+    {
+      "source": "src/api/__init__.py",
+      "destination": "dpe_pilot/api/__init__.py",
+      "source_sha256": "27bd69e9ebaf0811b6a00ad9c2c6d6be30274ccd06ce5f6d26730b799905fc67",
+      "destination_sha256": "27bd69e9ebaf0811b6a00ad9c2c6d6be30274ccd06ce5f6d26730b799905fc67",
+      "modified_for_migration": false
+    },
+    {
+      "source": "src/config.py",
+      "destination": "dpe_pilot/config.py",
+      "source_sha256": "1e5533f0188ea5050c2a6bfea390d2b111350a736d3ba3a0fa47b9462605a17e",
+      "destination_sha256": "53a8033a9ee9b10e5ab5148766ce59e0aab6712901994296a1e3598ee3c5bf19",
+      "modified_for_migration": true
+    },
+    {
+      "source": "src/ingestion/__init__.py",
+      "destination": "dpe_pilot/ingestion/__init__.py",
+      "source_sha256": "95764d3e4deaea3114bd9eeb9f0e2dd36f4f0a69b5eb006882effbbf5440290a",
+      "destination_sha256": "95764d3e4deaea3114bd9eeb9f0e2dd36f4f0a69b5eb006882effbbf5440290a",
+      "modified_for_migration": false
+    },
+    {
+      "source": "src/ingestion/dpe_ingest.py",
+      "destination": "dpe_pilot/ingestion/dpe_ingest.py",
+      "source_sha256": "b47c6442334d3cbdac2bc19d27457793efcc6a35313fb59e188e0791cd9ce11c",
+      "destination_sha256": "b47c6442334d3cbdac2bc19d27457793efcc6a35313fb59e188e0791cd9ce11c",
+      "modified_for_migration": false
+    },
+    {
+      "source": "src/main.py",
+      "destination": "dpe_pilot/main.py",
+      "source_sha256": "9d6e6f22ee2b0c3333a2cc599540a65a32c48305fac87b4dbead8a1d739365f2",
+      "destination_sha256": "9d6e6f22ee2b0c3333a2cc599540a65a32c48305fac87b4dbead8a1d739365f2",
+      "modified_for_migration": false
+    },
+    {
+      "source": "src/models.py",
+      "destination": "dpe_pilot/models.py",
+      "source_sha256": "aee36fb86f9960940f6b252bb6ce10b7cb874a0ae180ba292cdc4556237ab54d",
+      "destination_sha256": "aee36fb86f9960940f6b252bb6ce10b7cb874a0ae180ba292cdc4556237ab54d",
+      "modified_for_migration": false
+    },
+    {
+      "source": "src/schemas.py",
+      "destination": "dpe_pilot/schemas.py",
+      "source_sha256": "f03817e05ff3bf36359476dad5a7ddef4a14daceaaaba9740fa0e8c41571ec51",
+      "destination_sha256": "f03817e05ff3bf36359476dad5a7ddef4a14daceaaaba9740fa0e8c41571ec51",
+      "modified_for_migration": false
+    },
+    {
+      "source": "tests/__init__.py",
+      "destination": "tests/__init__.py",
+      "source_sha256": "96ef1d7374b189997691f6f01a0c8cfa9cd47ae024bfa081e04a882f36f364a3",
+      "destination_sha256": "96ef1d7374b189997691f6f01a0c8cfa9cd47ae024bfa081e04a882f36f364a3",
+      "modified_for_migration": false
+    },
+    {
+      "source": "tests/test_api.py",
+      "destination": "tests/test_api.py",
+      "source_sha256": "662c713365422d4aabfafa7b51159183ea4978fbccb1a047edff6dc58d0c09af",
+      "destination_sha256": "cfd0f88752872f3a8d1372a16e96ea282c3f0bca30da41dad10fe9d12913dfd1",
+      "modified_for_migration": true
+    }
+  ],
+  "excluded": [
+    {
+      "path": ".env.example",
+      "reason": "Replaced by component-specific instructions/templates; original retained in private archive. No environment file was read."
+    },
+    {
+      "path": ".gitignore",
+      "reason": "Workspace/framework metadata retained in original archive; component metadata recreated."
+    },
+    {
+      "path": ".graphifyignore",
+      "reason": "Workspace/framework metadata retained in original archive; component metadata recreated."
+    },
+    {
+      "path": "CLAUDE.md",
+      "reason": "Workspace/framework metadata retained in original archive; component metadata recreated."
+    }
+  ],
+  "adaptations": [
+    "Renamed src package to dpe_pilot and updated Docker/Makefile/unit-test entrypoints.",
+    "Isolated demo database on loopback port 55432 and requires a local password.",
+    "Replaced inherited credential defaults with a password-free local connection default and fresh placeholder template.",
+    "Legacy docs retained with explicit synthetic-data and historical-command warnings.",
+    "Startup/demo importer and PostGIS-dependent skipped tests retained as prototype behavior; no service or database started."
+  ],
+  "source_archive_path": "archived/biz/data-web-framework",
+  "source_hash_basis": "Original tracked files at source_commit; archive lifecycle banners were subsequently added to the preserved source checkout.",
+  "verification": {
+    "dvf_tests": "33 passed",
+    "dpe_tests": "1 passed; 2 PostGIS-dependent tests skipped",
+    "services_started": false,
+    "schema_migrations_run": false,
+    "private_environment_files_copied": false
+  }
+}

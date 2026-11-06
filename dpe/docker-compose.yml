@@ -1,0 +1,19 @@
+name: dvf-dpe-pilot
+services:
+  postgres:
+    image: postgis/postgis:15-3.3
+    environment:
+      POSTGRES_USER: dpe_user
+      POSTGRES_PASSWORD: ${DPE_DB_PASSWORD:?Set a local DPE_DB_PASSWORD}
+      POSTGRES_DB: dpe_db
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dpe_user -d dpe_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+volumes:
+  postgres_data:
